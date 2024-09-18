@@ -15,6 +15,7 @@ This is a little experiment on file archives. I have a use case where I'd like t
 
 First thing I want to avoid is the unpacker being smart about creating directories as there are so many fiddly bits and potential syscalls to do. So we have the sender send all directory paths in sorted order and with null byte separators. Then the filenames also with null byte separators. Then the file sizes as u32le aligned to 4. Then all the file data concat'd together. This archive file can then be mmap'd. Because of the null byte separators, we can pass these strings directly to the syscall either `mkdir` or `open`.
 
+WIP
 
 # my random notes
 
