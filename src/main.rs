@@ -2,7 +2,7 @@ use std::env;
 use std::collections::HashSet;
 use std::path::Path;
 use std::io;
-use std::io::{stdin,BufRead,Write,BufWriter};
+use std::io::{stdin,BufRead,Write,BufWriter,Seek};
 use std::ffi::OsString;
 use std::os::unix::prelude::OsStrExt;
 use std::os::fd::FromRawFd;
@@ -83,6 +83,14 @@ fn create_v0(args: Vec<String>) {
     }
     outwriter.write(&dirsb).unwrap();
     outwriter.write(&filesb).unwrap();
+    {
+        let pos = outwriter.stream_position().unwrap();
+        let adj = 4 - (pos % 4);
+        for _ in 0..adj { outwriter.write(&[0]).unwrap(); }
+        let pos = outwriter.stream_position().unwrap();
+        println!("wrote {} bytes of padding, pos now {}", adj, pos);
+        assert!(pos % 4 == 0);
+    }
     for size in sizes {
         outwriter.write(&(size as u32).to_le_bytes()).unwrap();
     }
@@ -104,6 +112,18 @@ fn chroot(dir: &Path) {
     File::create("/proc/self/gid_map").unwrap().write_all(format!("0 {} 1", uid).as_bytes()).unwrap();
     fs::chroot(dir).unwrap();
     std::env::set_current_dir("/").unwrap();
+}
+
+fn as_slice<T>(data: &[u8]) -> Option<&[T]> {
+    let len = data.len();
+    let ptr = data.as_ptr();
+    let align = std::mem::align_of::<T>();
+    if len % align != 0 { return None; }
+    if (ptr as usize) % align != 0 { return None; }
+    unsafe {
+        let ptr = ptr as *const T;
+        Some(std::slice::from_raw_parts(ptr, len / align))
+    }
 }
 
 /// args <infile> <output dir> 
@@ -128,7 +148,16 @@ fn unpack_v0(args: Vec<String>) {
     dbg!((num_dirs, num_files, dirnames_size, filenames_size));
     let dirnames_start = 4 * 4;
     let filenames_start = dirnames_start + dirnames_size;
-    let filesizes_start = filenames_start + filenames_size;
+    let filesizes_start = {
+        let mut x = filenames_start + filenames_size;
+        if x % 4 != 0 {
+            let adj = 4 - (x % 4);
+            println!("adjusted {} forward by {} padding", x, adj);
+            x += adj;
+        }
+        x
+    };
+    assert!(filesizes_start % 4 == 0, "filesizes_start={}", filesizes_start);
     let data_start = filesizes_start + (4 * num_files);
 
     chroot(&outpath);
@@ -148,16 +177,16 @@ fn unpack_v0(args: Vec<String>) {
 
     {
         let mut filenames_cur = &mmap[filenames_start..filesizes_start];
-        let filesizes = &mut mmap[filesizes_start..data_start].chunks_exact(4); // todo maybe align this in the file
+        let filesizes = as_slice::<u32>(&mmap[filesizes_start..data_start]).unwrap();
         let mut data_cur = &mmap[data_start..];
 
-        for _ in 0..num_files {
+        for i in 0..num_files {
             let mut fileout = unsafe {
                 let fd = libc::open(filenames_cur.as_ptr() as *const i8, libc::O_CREAT | libc::O_WRONLY, 0o755);
                 assert!(fd > 0, "open failed");
                 File::from_raw_fd(fd)
             };
-            let size = u32::from_le_bytes(filesizes.next().unwrap().try_into().unwrap()) as usize;
+            let size = filesizes[i] as usize;
             let data = &data_cur[..size];
             assert!(data.len() == size);
             fileout.write_all(data).unwrap();
