@@ -38,8 +38,8 @@ fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
 /// input is line separated pathnames relative to cwd
 /// ---
 /// args <output file>
-fn create_v0(args: Vec<String>) {
-    let outname = args.get(2).ok_or(Error::NoOutfile).unwrap();
+fn create_v0(args: &[String]) {
+    let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let outfile = File::create(outname).unwrap();
     let mut outwriter = BufWriter::new(outfile);
     let files = {
@@ -71,13 +71,12 @@ fn create_v0(args: Vec<String>) {
     };
     let filesb = join_bytes(files.iter().map(|x| x.as_bytes()));
     let dirsb = join_bytes(dirs.iter().map(|x| x.as_os_str().as_bytes()));
-    dbg!(&dirs);
-    println!("there are {} dirs", dirs.len());
-    println!("there are {} files", files.len());
-    println!("total bytes of data {}", size);
-    println!("filenames len {}", filesb.len());
-    println!("writing to {}", outname);
-    println!("dirsb len {}", dirsb.len());
+    dbg!("there are {} dirs", dirs.len());
+    dbg!("there are {} files", files.len());
+    dbg!("total bytes of data {}", size);
+    dbg!("filenames len {}", filesb.len());
+    dbg!("writing to {}", outname);
+    dbg!("dirsb len {}", dirsb.len());
     for i in vec![dirs.len(), files.len(), dirsb.len(), filesb.len()] {
         outwriter.write(&(i as u32).to_le_bytes()).unwrap();
     }
@@ -88,7 +87,7 @@ fn create_v0(args: Vec<String>) {
         let adj = 4 - (pos % 4);
         for _ in 0..adj { outwriter.write(&[0]).unwrap(); }
         let pos = outwriter.stream_position().unwrap();
-        println!("wrote {} bytes of padding, pos now {}", adj, pos);
+        dbg!("wrote {} bytes of padding, pos now {}", adj, pos);
         assert!(pos % 4 == 0);
     }
     for size in sizes {
@@ -128,9 +127,9 @@ fn as_slice<T>(data: &[u8]) -> Option<&[T]> {
 
 /// args <infile> <output dir> 
 ///   <output dir> should be empty
-fn unpack_v0(args: Vec<String>) {
-    let inname = args.get(2).ok_or(Error::NoOutfile).unwrap();
-    let outname = args.get(3).ok_or(Error::NoOutfile).unwrap();
+fn unpack_v0(args: &[String]) {
+    let inname = args.get(0).ok_or(Error::NoOutfile).unwrap();
+    let outname = args.get(1).ok_or(Error::NoOutfile).unwrap();
     let inpath = Path::new(&inname);
     let outpath = Path::new(&outname);
     assert!(inpath.is_file(), "{:?} should be a file", inpath);
@@ -152,7 +151,7 @@ fn unpack_v0(args: Vec<String>) {
         let mut x = filenames_start + filenames_size;
         if x % 4 != 0 {
             let adj = 4 - (x % 4);
-            println!("adjusted {} forward by {} padding", x, adj);
+            dbg!("adjusted {} forward by {} padding", x, adj);
             x += adj;
         }
         x
@@ -178,15 +177,16 @@ fn unpack_v0(args: Vec<String>) {
     {
         let mut filenames_cur = &mmap[filenames_start..filesizes_start];
         let filesizes = as_slice::<u32>(&mmap[filesizes_start..data_start]).unwrap();
+        assert!(filesizes.len() == num_files);
         let mut data_cur = &mmap[data_start..];
 
-        for i in 0..num_files {
+        for size in filesizes {
+            let size = *size as usize;
             let mut fileout = unsafe {
                 let fd = libc::open(filenames_cur.as_ptr() as *const i8, libc::O_CREAT | libc::O_WRONLY, 0o755);
                 assert!(fd > 0, "open failed");
                 File::from_raw_fd(fd)
             };
-            let size = filesizes[i] as usize;
             let data = &data_cur[..size];
             assert!(data.len() == size);
             fileout.write_all(data).unwrap();
@@ -201,8 +201,8 @@ fn unpack_v0(args: Vec<String>) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
-        Some("create_v0") => { create_v0(args); },
-        Some("unpack_v0") => { unpack_v0(args); },
+        Some("create_v0") => { create_v0(&args[2..]); },
+        Some("unpack_v0") => { unpack_v0(&args[2..]); },
         _ => {
             println!("create_v0 <>");
         }
