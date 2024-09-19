@@ -25,6 +25,35 @@ fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
     acc
 }
 
+// really just writing this to support cpio to avoid --make-directories
+fn list_dirs(_args: &[String]) {
+    let files = {
+        let mut acc: Vec<_> = stdin().lock().lines().map(|x| x.unwrap()).collect();
+        acc.sort();
+        acc
+    };
+    let dirs = {
+        let mut acc = HashSet::new();
+        let empty = OsString::new();
+        for file in &files {
+            let p = Path::new(&file);
+            if !p.is_file() { continue; }
+            assert!(p.is_file(), "{:?} is not file", p);
+            for parent in p.ancestors().skip(1) {
+                if parent != empty {
+                    acc.insert(parent.to_owned());
+                }
+            }
+        }
+        let mut acc: Vec<_> = acc.drain().collect();
+        acc.sort();
+        acc
+    };
+    for dir in dirs {
+        println!("{}", dir.into_os_string().into_string().unwrap());
+    }
+}
+
 /// v0 archive format
 /// num_dirs: u32le 
 /// num_files: u32le
@@ -71,12 +100,12 @@ fn create_v0(args: &[String]) {
     };
     let filesb = join_bytes(files.iter().map(|x| x.as_bytes()));
     let dirsb = join_bytes(dirs.iter().map(|x| x.as_os_str().as_bytes()));
-    dbg!("there are {} dirs", dirs.len());
-    dbg!("there are {} files", files.len());
-    dbg!("total bytes of data {}", size);
-    dbg!("filenames len {}", filesb.len());
-    dbg!("writing to {}", outname);
-    dbg!("dirsb len {}", dirsb.len());
+    println!("there are {} dirs", dirs.len());
+    println!("there are {} files", files.len());
+    println!("total bytes of data {}", size);
+    println!("filenames len {}", filesb.len());
+    println!("writing to {}", outname);
+    println!("dirsb len {}", dirsb.len());
     for i in vec![dirs.len(), files.len(), dirsb.len(), filesb.len()] {
         outwriter.write(&(i as u32).to_le_bytes()).unwrap();
     }
@@ -87,7 +116,7 @@ fn create_v0(args: &[String]) {
         let adj = 4 - (pos % 4);
         for _ in 0..adj { outwriter.write(&[0]).unwrap(); }
         let pos = outwriter.stream_position().unwrap();
-        dbg!("wrote {} bytes of padding, pos now {}", adj, pos);
+        println!("wrote {} bytes of padding, pos now {}", adj, pos);
         assert!(pos % 4 == 0);
     }
     for size in sizes {
@@ -101,6 +130,7 @@ fn create_v0(args: &[String]) {
 
 fn chroot(dir: &Path) {
     let uid = unsafe { libc::geteuid() };
+    let gid = unsafe { libc::getegid() };
     unsafe {
         let ret = libc::unshare(libc::CLONE_NEWUSER);
         assert!(ret == 0, "unshare fail");
@@ -108,7 +138,8 @@ fn chroot(dir: &Path) {
     File::create("/proc/self/uid_map").unwrap()
         .write_all(format!("0 {} 1", uid).as_bytes()).unwrap();
     File::create("/proc/self/setgroups").unwrap().write_all(b"deny").unwrap();
-    File::create("/proc/self/gid_map").unwrap().write_all(format!("0 {} 1", uid).as_bytes()).unwrap();
+    File::create("/proc/self/gid_map").unwrap()
+        .write_all(format!("0 {} 1", gid).as_bytes()).unwrap();
     fs::chroot(dir).unwrap();
     std::env::set_current_dir("/").unwrap();
 }
@@ -144,14 +175,12 @@ fn unpack_v0(args: &[String]) {
             u32::from_le_bytes(mmap[12..16].try_into().unwrap()) as usize,
         )
     };
-    dbg!((num_dirs, num_files, dirnames_size, filenames_size));
     let dirnames_start = 4 * 4;
     let filenames_start = dirnames_start + dirnames_size;
     let filesizes_start = {
         let mut x = filenames_start + filenames_size;
         if x % 4 != 0 {
             let adj = 4 - (x % 4);
-            dbg!("adjusted {} forward by {} padding", x, adj);
             x += adj;
         }
         x
@@ -203,8 +232,11 @@ fn main() {
     match args.get(1).map(|s| s.as_str()) {
         Some("create_v0") => { create_v0(&args[2..]); },
         Some("unpack_v0") => { unpack_v0(&args[2..]); },
+        Some("list_dirs") => { list_dirs(&args[2..]); },
         _ => {
-            println!("create_v0 <>");
+            println!("create_v0 <output-file> < <file-list>");
+            println!("unpack_v0 <input-file> <output-file>");
+            println!("list_dirs < <file-list>");
         }
     }
 }
