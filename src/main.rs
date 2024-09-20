@@ -2,18 +2,20 @@ use std::env;
 use std::collections::HashSet;
 use std::path::Path;
 use std::io;
-use std::io::{stdin,BufRead,Write,BufWriter,Seek};
+use std::io::{stdin,BufRead,Write,BufWriter,Seek,SeekFrom};
 use std::ffi::OsString;
 use std::os::unix::prelude::OsStrExt;
-use std::os::fd::FromRawFd;
+use std::os::fd::{FromRawFd,AsRawFd};
 use std::fs::File;
 use memmap::MmapOptions;
 use std::os::unix::fs;
+use std::ptr;
 
 
 #[derive(Debug)]
 enum Error {
     NoOutfile,
+    CopyFileRange,
 }
 
 fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
@@ -156,16 +158,43 @@ fn as_slice<T>(data: &[u8]) -> Option<&[T]> {
     }
 }
 
+// hmm this is slightly weird, both should be mut but the libc hides this
+// and if we give it mut then it complains about useless mut
+fn copy_file_range_all(filein: &File, fileout: &File, len: usize) -> Result<(), Error> {
+    let fd_in  = filein.as_raw_fd();
+    let fd_out = fileout.as_raw_fd();
+    let mut len = len;
+    while len > 0 {
+        let ret = unsafe {
+            libc::copy_file_range(fd_in, ptr::null_mut(), fd_out, ptr::null_mut(), len, 0)
+        };
+        if ret < 0 { return Err(Error::CopyFileRange); }
+        if ret == 0 { return Err(Error::CopyFileRange); }
+        let ret = ret as usize;
+        if ret > len { return Err(Error::CopyFileRange); }
+        len -= ret;
+    }
+    Ok(())
+}
+
 /// args <infile> <output dir> 
 ///   <output dir> should be empty
 fn unpack_v0(args: &[String]) {
     let inname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let outname = args.get(1).ok_or(Error::NoOutfile).unwrap();
+    let use_copy_file = { 
+        if let Some(s) = args.get(2) {
+            s == "copy_file_range"
+        } else {
+            false
+        }
+    };
+    println!("use_copy_file={}", use_copy_file);
     let inpath = Path::new(&inname);
     let outpath = Path::new(&outname);
     assert!(inpath.is_file(), "{:?} should be a file", inpath);
     assert!(outpath.is_dir(), "{:?} should be a dir", outpath);
-    let infile = File::open(inpath).unwrap();
+    let mut infile = File::open(inpath).unwrap();
     let mmap = unsafe { MmapOptions::new().map(&infile).unwrap() };
     let (num_dirs, num_files, dirnames_size, filenames_size) = {
         (
@@ -203,7 +232,25 @@ fn unpack_v0(args: &[String]) {
         }
     }
 
-    {
+    // kinda ugly
+    if use_copy_file {
+        let mut filenames_cur = &mmap[filenames_start..filesizes_start];
+        let filesizes = as_slice::<u32>(&mmap[filesizes_start..data_start]).unwrap();
+        assert!(filesizes.len() == num_files);
+        infile.seek(SeekFrom::Start(data_start as u64)).unwrap();
+        for size in filesizes {
+            let size = *size as usize;
+            let mut fileout = unsafe {
+                let fd = libc::open(filenames_cur.as_ptr() as *const i8, libc::O_CREAT | libc::O_WRONLY, 0o755);
+                assert!(fd > 0, "open failed");
+                File::from_raw_fd(fd)
+            };
+            copy_file_range_all(&infile, &fileout, size).unwrap();
+            let zbi = filenames_cur.iter().position(|&x| x == 0).unwrap();
+            filenames_cur = &filenames_cur[zbi+1..];
+        };
+
+    } else {
         let mut filenames_cur = &mmap[filenames_start..filesizes_start];
         let filesizes = as_slice::<u32>(&mmap[filesizes_start..data_start]).unwrap();
         assert!(filesizes.len() == num_files);
@@ -235,7 +282,7 @@ fn main() {
         Some("list_dirs") => { list_dirs(&args[2..]); },
         _ => {
             println!("create_v0 <output-file> < <file-list>");
-            println!("unpack_v0 <input-file> <output-file>");
+            println!("unpack_v0 <input-file> <output-file> [copy_file_range]");
             println!("list_dirs < <file-list>");
         }
     }

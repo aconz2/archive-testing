@@ -1,5 +1,11 @@
 #!/bin/bash
 
+function header() {
+    echo
+    echo "============================== $1 =============================="
+    echo
+}
+
 set -e
 
 cargo build --release
@@ -38,25 +44,27 @@ done
 
 popd &>/dev/null
 
-echo '-- testing archive-testing'
+header 'hyperfine archive-testing'
 taskset -c 0 \
     hyperfine \
     --shell=none \
     --warmup=1 \
     --prepare 'sh -c "rm -rf /tmp/dest; mkdir /tmp/dest"' \
-    --command-name tar  'tar --extract --file /tmp/archive-testing.tar --directory /tmp/dest' \
-    --command-name cpio './asstdin /tmp/archive-testing.cpio cpio --extract --directory /tmp/dest' \
-    --command-name atv0 "$bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest"
+    --command-name tar    'tar --extract --file /tmp/archive-testing.tar --directory /tmp/dest' \
+    --command-name cpio   './asstdin /tmp/archive-testing.cpio cpio --extract --directory /tmp/dest' \
+    --command-name atv0   "$bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest" \
+    --command-name atv0cf "$bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest copy_file_range"
 
-echo '-- testing linux'
+header 'hyperfine linux'
 taskset -c 0 \
     hyperfine \
     --shell=none \
     --warmup=1 \
     --prepare 'sh -c "rm -rf /tmp/dest; mkdir /tmp/dest"' \
-    --command-name tar  'tar --extract --file /tmp/linux.tar --directory /tmp/dest' \
-    --command-name cpio './asstdin /tmp/linux.cpio cpio --extract --directory /tmp/dest' \
-    --command-name atv0 "$bin unpack_v0 /tmp/linux.v0 /tmp/dest"
+    --command-name tar    'tar --extract --file /tmp/linux.tar --directory /tmp/dest' \
+    --command-name cpio   './asstdin /tmp/linux.cpio cpio --extract --directory /tmp/dest' \
+    --command-name atv0   "$bin unpack_v0 /tmp/linux.v0 /tmp/dest" \
+    --command-name atv0cf "$bin unpack_v0 /tmp/linux.v0 /tmp/dest copy_file_range"
 
 function setup() {
     rm -rf /tmp/dest
@@ -78,11 +86,14 @@ function testit() {
     perfit $@
 }
 
-echo '-- tracing tar'
+header 'tracing tar linux'
 testit tar --extract --file /tmp/linux.tar --directory /tmp/dest
 
-echo '-- tracing cpio'
+header 'tracing cpio linux'
 testit ./asstdin /tmp/linux.cpio cpio --extract --directory /tmp/dest
 
-echo '-- tracing at'
+header 'tracing atv0 linux'
 testit $bin unpack_v0 /tmp/linux.v0 /tmp/dest
+
+header 'tracing atv0cf linux'
+testit $bin unpack_v0 /tmp/linux.v0 /tmp/dest copy_file_range
