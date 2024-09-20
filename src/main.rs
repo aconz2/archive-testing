@@ -16,6 +16,7 @@ use std::ptr;
 enum Error {
     NoOutfile,
     CopyFileRange,
+    Align,
 }
 
 fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
@@ -56,6 +57,33 @@ fn list_dirs(_args: &[String]) {
     }
 }
 
+fn align_to_4<W: Seek + Write>(writer: &mut W) -> Result<(), Error> {
+    let pos = writer.stream_position().map_err(|_| Error::Align)?;
+    let adj = 4 - (pos % 4);
+    for _ in 0..adj { writer.write(&[0]).map_err(|_| Error::Align)?; }
+    let pos = writer.stream_position().map_err(|_| Error::Align)?;
+    //println!("wrote {} bytes of padding, pos now {}", adj, pos);
+    assert!(pos % 4 == 0);
+    Ok(())
+}
+
+fn make_malicious_archive(args: &[String]) {
+    let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
+    let outfile = File::create(outname).unwrap();
+    let mut outwriter = BufWriter::new(outfile);
+    let dirsb = b"../rdir\0/adir\0";
+    let filesb = b"../rfile\0/afile\0";
+    for i in vec![2, 2, dirsb.len(), filesb.len()] {
+        outwriter.write(&(i as u32).to_le_bytes()).unwrap();
+    }
+    outwriter.write(&dirsb[..]).unwrap();
+    outwriter.write(&filesb[..]).unwrap();
+    align_to_4(&mut outwriter).unwrap();
+    for size in vec![0, 0] {
+        outwriter.write(&(size as u32).to_le_bytes()).unwrap();
+    }
+}
+
 /// v0 archive format
 /// num_dirs: u32le 
 /// num_files: u32le
@@ -63,6 +91,7 @@ fn list_dirs(_args: &[String]) {
 /// filenames_size: u32le
 /// <dirnames with null bytes> of length dirnames_size bytes
 /// <filenames with null bytes> of length filenames_size bytes
+/// 0-3 padding bytes to align file_sizes up to 4 byte alignment
 /// <num_files x u32le file sizes> of length num_files * 4 bytes
 /// <data>
 /// ---
@@ -113,14 +142,8 @@ fn create_v0(args: &[String]) {
     }
     outwriter.write(&dirsb).unwrap();
     outwriter.write(&filesb).unwrap();
-    {
-        let pos = outwriter.stream_position().unwrap();
-        let adj = 4 - (pos % 4);
-        for _ in 0..adj { outwriter.write(&[0]).unwrap(); }
-        let pos = outwriter.stream_position().unwrap();
-        println!("wrote {} bytes of padding, pos now {}", adj, pos);
-        assert!(pos % 4 == 0);
-    }
+    align_to_4(&mut outwriter).unwrap();
+
     for size in sizes {
         outwriter.write(&(size as u32).to_le_bytes()).unwrap();
     }
@@ -280,6 +303,7 @@ fn main() {
         Some("create_v0") => { create_v0(&args[2..]); },
         Some("unpack_v0") => { unpack_v0(&args[2..]); },
         Some("list_dirs") => { list_dirs(&args[2..]); },
+        Some("make_malicious") => { make_malicious_archive(&args[2..]); },
         _ => {
             println!("create_v0 <output-file> < <file-list>");
             println!("unpack_v0 <input-file> <output-file> [copy_file_range]");

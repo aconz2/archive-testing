@@ -378,3 +378,29 @@ use_copy_file=true
 
 Overall good to know for small things like this repo, we can unpack it in less than 1 ms.
 
+
+# security
+
+Running `scripts/malicious.sh` unpacks an archive which contains directories `../rdir` and `/adir` and files `../rfile` and `/afile`. The `r` is for relative and `a` for absolute. Looking at the strace, we can see that it does not sanitize these paths at all, but they all end up in our destination directory.
+
+```
+...
+chroot("/tmp/dest")                     = 0
+chdir("/")                              = 0
+mkdir("../rdir", 0755)                  = 0
+mkdir("/adir", 0755)                    = 0
+openat(AT_FDCWD, "../rfile", O_WRONLY|O_CREAT, 0755) = 4
+close(4)                                = 0
+openat(AT_FDCWD, "/afile", O_WRONLY|O_CREAT, 0755) = 4
+close(4)                                = 0
+...
+
+# ls -l /tmp/dest
+total 0
+drwxr-xr-x. 2 andrew andrew 40 Sep 20 16:48 adir
+-rwxr-xr-x. 1 andrew andrew  0 Sep 20 16:48 afile
+drwxr-xr-x. 2 andrew andrew 40 Sep 20 16:48 rdir
+-rwxr-xr-x. 1 andrew andrew  0 Sep 20 16:48 rfile
+```
+
+This is only preliminary work and not more thoroughly tested yet.
