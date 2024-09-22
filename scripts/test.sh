@@ -45,7 +45,7 @@ done
 popd &>/dev/null
 
 header 'hyperfine archive-testing'
-taskset -c 0 \
+taskset -c 2 \
     hyperfine \
     --shell=none \
     --warmup=1 \
@@ -56,7 +56,7 @@ taskset -c 0 \
     --command-name atv0cf "$bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest copy_file_range"
 
 header 'hyperfine linux'
-taskset -c 0 \
+taskset -c 2 \
     hyperfine \
     --shell=none \
     --warmup=1 \
@@ -73,12 +73,12 @@ function setup() {
 
 function straceit() {
     setup
-    taskset -c 0 strace -c $@
+    taskset -c 2 strace -c $@
 }
 
 function perfit() {
     setup
-    taskset -c 0 perf stat $@
+    taskset -c 2 perf stat $@
 }
 
 function testit() {

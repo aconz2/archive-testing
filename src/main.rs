@@ -5,12 +5,16 @@ use std::io;
 use std::io::{stdin,BufRead,Write,BufWriter,Seek,SeekFrom};
 use std::ffi::OsString;
 use std::os::unix::prelude::OsStrExt;
-use std::os::fd::{FromRawFd,AsRawFd};
+use std::os::fd::{FromRawFd,AsRawFd,IntoRawFd};
 use std::fs::File;
 use memmap::MmapOptions;
 use std::os::unix::fs;
 use std::ptr;
 
+// default fd table size is 64, we 3 + 1 open by default but we don't want to go to fd 257 because
+// that would trigger a realloc and then we waste, so this should always be 4 less than a power of
+// 2. Seems like diminishing returns
+const CLOSE_EVERY: i32 = 256 - 4;
 
 #[derive(Debug)]
 enum Error {
@@ -181,9 +185,7 @@ fn as_slice<T>(data: &[u8]) -> Option<&[T]> {
     }
 }
 
-// hmm this is slightly weird, both should be mut but the libc hides this
-// and if we give it mut then it complains about useless mut
-fn copy_file_range_all(filein: &File, fileout: &File, len: usize) -> Result<(), Error> {
+fn copy_file_range_all(filein: &mut File, fileout: &mut File, len: usize) -> Result<(), Error> {
     let fd_in  = filein.as_raw_fd();
     let fd_out = fileout.as_raw_fd();
     let mut len = len;
@@ -268,7 +270,7 @@ fn unpack_v0(args: &[String]) {
                 assert!(fd > 0, "open failed");
                 File::from_raw_fd(fd)
             };
-            copy_file_range_all(&infile, &fileout, size).unwrap();
+            copy_file_range_all(&mut infile, &mut fileout, size).unwrap();
             let zbi = filenames_cur.iter().position(|&x| x == 0).unwrap();
             filenames_cur = &filenames_cur[zbi+1..];
         };
@@ -278,6 +280,8 @@ fn unpack_v0(args: &[String]) {
         let filesizes = as_slice::<u32>(&mmap[filesizes_start..data_start]).unwrap();
         assert!(filesizes.len() == num_files);
         let mut data_cur = &mmap[data_start..];
+
+        let mut close_every: i32 = CLOSE_EVERY;
 
         for size in filesizes {
             let size = *size as usize;
@@ -291,10 +295,25 @@ fn unpack_v0(args: &[String]) {
             fileout.write_all(data).unwrap();
             data_cur = &data_cur[size..];
 
+            let _ = fileout.into_raw_fd();
+            close_every -= 1;
+            if close_every == 0 {
+                unsafe {
+                    // TODO if this was in a lib we'd want to figure out our current fd that we'll
+                    // go into and/or verify there aren't any random fds above us but not sure you
+                    // can do that well so maybe this is only a go if we're a standalone exe
+                    libc::close_range(4, std::u32::MAX, 0);
+                }
+                close_every = CLOSE_EVERY;
+            }
+
             let zbi = filenames_cur.iter().position(|&x| x == 0).unwrap();
             filenames_cur = &filenames_cur[zbi+1..];
         }
     }
+
+    // TODO if this was in a lib we'd want to do another libc::close_range(4, std::u32::MAX, 0)
+    // here
 }
 
 fn main() {
