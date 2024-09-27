@@ -170,27 +170,31 @@ fn create_v0(args: &[String]) {
 
 use liblistdir::Visitor;
 use std::ffi::CStr;
-struct MyVisitor {}
-impl MyVisitor {
-    fn new() -> MyVisitor {
-        MyVisitor { }
+
+struct MyVisitor<W: Write> {
+    writer: BufWriter<W>,
+}
+
+impl<W: Write> MyVisitor<W> {
+    fn new(file: W) -> MyVisitor<W> {
+        MyVisitor {
+            writer: BufWriter::new(file)
+        }
     }
 }
-impl Visitor for MyVisitor {
-    fn on_file(&self, name: &CStr, file: File) -> () {
+
+impl<W: Write> Visitor for MyVisitor<W> {
+    fn on_file(&mut self, name: &CStr, file: File) -> () {
         let len = file.metadata().unwrap().len();
-        println!("file {name:?} {len}");
+        self.writer.write(&(len as u32).to_le_bytes()).unwrap();
+        std::io::copy(file, self.writer);
     }
 
-    fn on_empty_dir(&self, name: &CStr) -> () {
-        println!("dir empty {name:?}");
-    }
-
-    fn on_dir(&self, name: &CStr) -> () {
+    fn on_dir(&mut self, name: &CStr) -> () {
         println!("dir {name:?}");
     }
 
-    fn leave_dir(&self) -> () {
+    fn leave_dir(&mut self) -> () {
         println!("leaving");
     }
 }
@@ -201,13 +205,10 @@ fn create_v1(args: &[String]) {
     let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let indir = args.get(1).ok_or(Error::NoOutfile).unwrap();
     let indirpath = Path::new(indir);
-    let v = MyVisitor::new();
+    let fileout = File::create(outname).unwrap();
+    let mut v: MyVisitor<File> = MyVisitor::new(fileout);
 
-    // okay so we need two more events, the dir not empty and leaving/popdir
-    // we write
-    //
-
-    list_dir(indirpath, &v).unwrap()
+    list_dir(indirpath, &mut v).unwrap()
 }
 
 fn chroot(dir: &Path) {
