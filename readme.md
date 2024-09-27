@@ -433,16 +433,16 @@ This is only preliminary work and not more thoroughly tested yet.
 
 # pack
 
-So everything above is pertaining to unpacking an archive. What about when we want to pack the archive, how can we do so in an efficient manner? Again we only care about directories and regular files, we won't attempt to detect hardlinks (I think) and we won't do any filtering/ignoring. Just iterate over a dir recursively and make the archive. And the dir will on tmpfs (this has a file name limit of 255 which simplifies using `getdents64`).
+So everything above is pertaining to unpacking an archive. What about when we want to pack the archive, how can we do so in an efficient manner? Again we only care about directories and regular files, we won't attempt to detect hardlinks (I think) and we won't do any filtering/ignoring, and we will not hit any permission issues (and if we do we'll just ignore them). Just iterate over a dir recursively and make the archive. And the dir will on tmpfs (this has a file name limit of 255 which simplifies using `getdents64`).
 
 ## directory listing
 
-Ignoring the archive format v0 layed out above for a moment, one nice approach is a depth first traversal limited to say 32 dirs deep for example. This bounds the number of open fd's because at the deepest part of the tree there is one dirfd open at each level in the tree.
+Ignoring the archive format v0 layed out above for a moment, one nice approach is a depth first traversal limited to say 32 dirs deep for example. This bounds the number of open fd's because at any time there is one dirfd open at each level in the tree.
 
-syscalls when listing the directory `.`, depth first
+syscalls when listing the directory `.`, depth first:
 
 
-#### `fs::read_dir+glibc+debug`
+#### `fs::read_dir+glibc+debug` (`list_dir`)
 
 ```
 statx(AT_FDCWD, ".", AT_STATX_SYNC_AS_STAT, STATX_ALL, {stx_mask=STATX_ALL|STATX_MNT_ID|STATX_SUBVOL, stx_attributes=0, stx_mode=S_IFDIR|0755, stx_size=58, ...}) = 0
@@ -496,7 +496,7 @@ getdents64(6, 0x7f527ebb2058 /* 0 entries */, 2048) = 0
 close(6)                                = 0
 ```
 
-#### `rustix::fs::RawDir+debug`
+#### `rustix::fs::RawDir+debug` (`list_dir2`)
 
 ```
 openat(AT_FDCWD, ".", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 3
@@ -546,6 +546,84 @@ getdents64(6, 0x55f847b5ee40 /* 0 entries */, 4096) = 0
 close(6)                                = 0
 ```
 
+#### hacky `fdopendir` (`list_dir_c`)
+
+musl
+
+```
+open(".", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_DIRECTORY) = 3
+fcntl(3, F_SETFD, FD_CLOEXEC)           = 0
+fstat(3, {st_mode=S_IFDIR|0755, st_size=88, ...}) = 0
+fcntl(3, F_GETFL)                       = 0x18000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
+mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f1506e20000
+fcntl(3, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(3, 0x7f1506e20048 /* 7 entries */, 2048) = 208
+openat(3, "src", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 4
+fstat(4, {st_mode=S_IFDIR|0755, st_size=40, ...}) = 0
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(4, 0x7f1506e20ae8 /* 5 entries */, 2048) = 144
+getdents64(4, 0x7f1506e20ae8 /* 0 entries */, 2048) = 0
+close(4)                                = 0
+openat(3, "target", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 4
+fstat(4, {st_mode=S_IFDIR|0755, st_size=130, ...}) = 0
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(4, 0x7f1506e21588 /* 7 entries */, 2048) = 232
+openat(4, "debug", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 5
+fstat(5, {st_mode=S_IFDIR|0755, st_size=204, ...}) = 0
+fcntl(5, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(5, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(5, 0x7f1506e20af8 /* 12 entries */, 2048) = 376
+openat(5, "deps", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 6
+fstat(6, {st_mode=S_IFDIR|0755, st_size=2442, ...}) = 0
+fcntl(6, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f1506e1e000
+fcntl(6, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(6, 0x7f1506e1e058 /* 39 entries */, 2048) = 2008
+mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f1506e1d000
+mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f1506e1c000
+getdents64(6, 0x7f1506e1e058 /* 3 entries */, 2048) = 152
+getdents64(6, 0x7f1506e1e058 /* 0 entries */, 2048) = 0
+close(6)                                = 0
+```
+
+glibc
+
+```
+openat(AT_FDCWD, ".", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 3
+fstat(3, {st_mode=S_IFDIR|0755, st_size=88, ...}) = 0
+fcntl(3, F_GETFL)                       = 0x18000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
+fcntl(3, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(3, 0x5649ec171d20 /* 7 entries */, 32768) = 208
+openat(3, "src", O_RDONLY|O_CLOEXEC)    = 4
+fstat(4, {st_mode=S_IFDIR|0755, st_size=40, ...}) = 0
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(4, 0x5649ec179df0 /* 5 entries */, 32768) = 144
+getdents64(4, 0x5649ec179df0 /* 0 entries */, 32768) = 0
+close(4)                                = 0
+openat(3, "target", O_RDONLY|O_CLOEXEC) = 4
+fstat(4, {st_mode=S_IFDIR|0755, st_size=130, ...}) = 0
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(4, 0x5649ec181f00 /* 7 entries */, 32768) = 232
+openat(4, "debug", O_RDONLY|O_CLOEXEC)  = 5
+fstat(5, {st_mode=S_IFDIR|0755, st_size=204, ...}) = 0
+fcntl(5, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(5, F_SETFD, FD_CLOEXEC)           = 0
+getdents64(5, 0x5649ec189f40 /* 12 entries */, 32768) = 376
+openat(5, "deps", O_RDONLY|O_CLOEXEC)   = 6
+fstat(6, {st_mode=S_IFDIR|0755, st_size=2442, ...}) = 0
+fcntl(6, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(6, F_SETFD, FD_CLOEXEC)           = 0
+brk(0x5649ec1ba000)                     = 0x5649ec1ba000
+getdents64(6, 0x5649ec191f80 /* 42 entries */, 32768) = 2160
+getdents64(6, 0x5649ec191f80 /* 0 entries */, 32768) = 0
+brk(0x5649ec1b2000)                     = 0x5649ec1b2000
+close(6)                                = 0
+```
+
 ### Discussion
 
 * `fs::read_dir` uses a `libc::DIR` under the hood, so we get slightly different results when using glibc vs musl.
@@ -553,7 +631,10 @@ close(6)                                = 0
   * `opendir` in [musl](http://git.musl-libc.org/cgit/musl/tree/src/dirent/opendir.c) uses a fixed size `DIR` with a 2k buffer so it's getdents calls are always with 2048. This means it avoids a stat call, but it [does call](http://git.musl-libc.org/cgit/musl/tree/src/fcntl/open.c) `fcntl` with cloexec even though it already passed it in? 
   * notice that because there is no `opendirat(DIR, char*)` (except there is a [hidden one in glibc](https://elixir.bootlin.com/glibc/glibc-2.40/source/sysdeps/unix/sysv/linux/opendir.c#L69), the calls to `open{at}` require us to combine the pathname like `./target/debug/deps` every time, and the kernel has to traverse that path in depth
     * there is an `fdopendir` that I tried using, so I could essentially do `fdopendir(openat(dirfd, "debug"))`, but that is sad because in [musl](http://git.musl-libc.org/cgit/musl/tree/src/dirent/fdopendir.c) it does a `fstat,fcntl(F_SETFD, FD_CLOEXEC)` and [glibc](https://elixir.bootlin.com/glibc/glibc-2.40/source/sysdeps/unix/sysv/linux/fdopendir.c#L28) also does `fstat,fcntl(F_GETFL),fcntl(F_SETFD, FD_CLOEXEC)`
+    * this gets worse if instead of asking it to list `.`, we give it an abs path like `/run/output`, since that prefix now has to appear in every open call (I guess you could chdir but no)
 * if we use `getdents64` directly, we can skip all that crap and use `openat` with our dirfd and never concat paths, along with not needing to double check that things are directories or set cloexec because we know we opened with `O_RDONLY|O_DIRECTORY|O_CLOEXEC`
   * notice though that in debug mode there is an `fcntl(F_GETFD)` before close which comes from a debug assert in `OwnedFd`, but in release mode the syscalls look so nice
   * if we do need to concat paths, we can reuse a single buffer, pushing and popping when we enter or leave a directory
-* `walkdir` looks identical to `fs::read_dir` in syscalls
+* `walkdir` looks identical to `fs::read_dir` in syscalls, though it does print with a leading `./` of the passed in directory so the output doesn't match exactly the others
+* see `scripts/testlistdir.sh` that runs everything
+* for small dirs we're chasing microseconds but it's been a good investigation
