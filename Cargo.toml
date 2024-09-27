@@ -6,3 +6,13 @@ edition = "2021"
 [dependencies]
 libc = "0.2.158"
 memmap = "0.7.0"
+rustix = { version = "0.38.37", features = ["fs"] }
+walkdir = "2.5.0"
+
+[[bin]]
+name = "archive-testing"
+path = "src/main.rs"
+
+[[bin]]
+name = "listdir"
+path = "src/listdir.rs"
