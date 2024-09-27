@@ -79,7 +79,7 @@ impl DIR {
 
     fn openat(&self, dirent: *const libc::dirent) -> Result<Self, Error> {
         let fd = unsafe {
-            let ret = libc::openat(self.fd, dirent_name_ptr(&dirent), libc::O_RDONLY | libc::O_CLOEXEC);
+            let ret = libc::openat(self.fd, dirent_name_ptr(&dirent), libc::O_DIRECTORY | libc::O_RDONLY | libc::O_CLOEXEC);
             if ret < 0 { return Err(Error::OpenAt) }
             OwnedFd::from_raw_fd(ret)
         };

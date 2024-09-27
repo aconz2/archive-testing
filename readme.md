@@ -442,7 +442,9 @@ Ignoring the archive format v0 layed out above for a moment, one nice approach i
 syscalls when listing the directory `.`, depth first:
 
 
-#### `fs::read_dir+glibc+debug` (`list_dir`)
+#### `fs::read_dir+debug` (`list_dir`)
+
+glibc
 
 ```
 statx(AT_FDCWD, ".", AT_STATX_SYNC_AS_STAT, STATX_ALL, {stx_mask=STATX_ALL|STATX_MNT_ID|STATX_SUBVOL, stx_attributes=0, stx_mode=S_IFDIR|0755, stx_size=58, ...}) = 0
@@ -468,7 +470,7 @@ getdents64(6, 0x55aa34c1e2c0 /* 0 entries */, 32768) = 0
 close(6)                                = 0
 ```
 
-#### `fs::read_dir+musl+debug`
+musl
 
 ```
 stat(".", {st_mode=S_IFDIR|0755, st_size=58, ...}) = 0
@@ -558,26 +560,26 @@ fcntl(3, F_GETFL)                       = 0x18000 (flags O_RDONLY|O_LARGEFILE|O_
 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f1506e20000
 fcntl(3, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(3, 0x7f1506e20048 /* 7 entries */, 2048) = 208
-openat(3, "src", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 4
+openat(3, "src", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_DIRECTORY) = 4
 fstat(4, {st_mode=S_IFDIR|0755, st_size=40, ...}) = 0
-fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(4, 0x7f1506e20ae8 /* 5 entries */, 2048) = 144
 getdents64(4, 0x7f1506e20ae8 /* 0 entries */, 2048) = 0
 close(4)                                = 0
-openat(3, "target", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 4
+openat(3, "target", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_DIRECTORY) = 4
 fstat(4, {st_mode=S_IFDIR|0755, st_size=130, ...}) = 0
-fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(4, 0x7f1506e21588 /* 7 entries */, 2048) = 232
-openat(4, "debug", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 5
+openat(4, "debug", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_DIRECTORY) = 5
 fstat(5, {st_mode=S_IFDIR|0755, st_size=204, ...}) = 0
-fcntl(5, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(5, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(5, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(5, 0x7f1506e20af8 /* 12 entries */, 2048) = 376
-openat(5, "deps", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 6
+openat(5, "deps", O_RDONLY|O_LARGEFILE|O_CLOEXEC|O_DIRECTORY) = 6
 fstat(6, {st_mode=S_IFDIR|0755, st_size=2442, ...}) = 0
-fcntl(6, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(6, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f1506e1e000
 fcntl(6, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(6, 0x7f1506e1e058 /* 39 entries */, 2048) = 2008
@@ -596,26 +598,26 @@ fstat(3, {st_mode=S_IFDIR|0755, st_size=88, ...}) = 0
 fcntl(3, F_GETFL)                       = 0x18000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(3, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(3, 0x5649ec171d20 /* 7 entries */, 32768) = 208
-openat(3, "src", O_RDONLY|O_CLOEXEC)    = 4
+openat(3, "src", O_RDONLY|O_CLOEXEC|O_DIRECTORY)    = 4
 fstat(4, {st_mode=S_IFDIR|0755, st_size=40, ...}) = 0
-fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(4, 0x5649ec179df0 /* 5 entries */, 32768) = 144
 getdents64(4, 0x5649ec179df0 /* 0 entries */, 32768) = 0
 close(4)                                = 0
-openat(3, "target", O_RDONLY|O_CLOEXEC) = 4
+openat(3, "target", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 4
 fstat(4, {st_mode=S_IFDIR|0755, st_size=130, ...}) = 0
-fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(4, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(4, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(4, 0x5649ec181f00 /* 7 entries */, 32768) = 232
-openat(4, "debug", O_RDONLY|O_CLOEXEC)  = 5
+openat(4, "debug", O_RDONLY|O_CLOEXEC|O_DIRECTORY)  = 5
 fstat(5, {st_mode=S_IFDIR|0755, st_size=204, ...}) = 0
-fcntl(5, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(5, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(5, F_SETFD, FD_CLOEXEC)           = 0
 getdents64(5, 0x5649ec189f40 /* 12 entries */, 32768) = 376
-openat(5, "deps", O_RDONLY|O_CLOEXEC)   = 6
+openat(5, "deps", O_RDONLY|O_CLOEXEC|O_DIRECTORY)   = 6
 fstat(6, {st_mode=S_IFDIR|0755, st_size=2442, ...}) = 0
-fcntl(6, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE)
+fcntl(6, F_GETFL)                       = 0x8000 (flags O_RDONLY|O_LARGEFILE|O_DIRECTORY)
 fcntl(6, F_SETFD, FD_CLOEXEC)           = 0
 brk(0x5649ec1ba000)                     = 0x5649ec1ba000
 getdents64(6, 0x5649ec191f80 /* 42 entries */, 32768) = 2160
