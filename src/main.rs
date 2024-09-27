@@ -160,23 +160,54 @@ fn create_v0(args: &[String]) {
     }
 }
 
+/// v1 archive format
+/// message+
+/// message =
+/// file: <tag> <name zero term> <varint size> <blob>
+/// dir:  <tag> <name zero term>
+/// push: <tag>
+/// pop:  <tag>
+
+use liblistdir::Visitor;
+use std::ffi::CStr;
+struct MyVisitor {}
+impl MyVisitor {
+    fn new() -> MyVisitor {
+        MyVisitor { }
+    }
+}
+impl Visitor for MyVisitor {
+    fn on_file(&self, name: &CStr, file: File) -> () {
+        let len = file.metadata().unwrap().len();
+        println!("file {name:?} {len}");
+    }
+
+    fn on_empty_dir(&self, name: &CStr) -> () {
+        println!("dir empty {name:?}");
+    }
+
+    fn on_dir(&self, name: &CStr) -> () {
+        println!("dir {name:?}");
+    }
+
+    fn leave_dir(&self) -> () {
+        println!("leaving");
+    }
+}
+
 fn create_v1(args: &[String]) {
     use std::ffi::CStr;
 
     let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let indir = args.get(1).ok_or(Error::NoOutfile).unwrap();
     let indirpath = Path::new(indir);
+    let v = MyVisitor::new();
 
-    fn on_file(name: &CStr, file: File) {
-        let len = file.metadata().unwrap().len();
-        println!("file {name:?} {len}");
-    }
+    // okay so we need two more events, the dir not empty and leaving/popdir
+    // we write
+    //
 
-    fn on_dir(name: &CStr) {
-        println!("dir {name:?}");
-    }
-
-    list_dir(indirpath, on_file, on_dir).unwrap()
+    list_dir(indirpath, &v).unwrap()
 }
 
 fn chroot(dir: &Path) {

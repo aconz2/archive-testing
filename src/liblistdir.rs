@@ -3,6 +3,7 @@ use std::ffi::{OsStr,OsString,CStr,CString};
 use rustix::fs::{RawDir,FileType};
 use std::os::fd::{FromRawFd,AsRawFd,OwnedFd};
 use std::fs::File;
+use std::os::unix::ffi::OsStrExt;
 
 const MAX_DIR_DEPTH: usize = 32;
 
@@ -62,50 +63,69 @@ fn opendirat<Fd: AsRawFd>(fd: &Fd, name: &CStr) -> Result<OwnedFd, Error> {
 // }
 // ----------------
 
+pub trait Visitor {
+    fn on_file(&self, name: &CStr, file: File) -> ();
+    fn on_dir(&self, name: &CStr) -> ();
+    fn leave_dir(&self) -> ();
+}
 
-fn list_dir2_rec<F: Fn(&CStr, File) -> (), D: Fn(&CStr) -> ()>(curpath: &mut PathBuf, parentdir: &OwnedFd, iter: &mut RawDir<&OwnedFd>, fcb: &F, dcb: &D, depth: usize) -> Result<(), Error> {
+fn list_dir2_rec<V: Visitor>(curname: &CStr, curdir: &OwnedFd, v: &V, depth: usize) -> Result<(), Error> {
     if depth > MAX_DIR_DEPTH { return Err(Error::DirTooDeep); }
-    while let Some(entry) = iter.next() {
-        let entry = entry.map_err(|_| Error::Getdents)?;
-        match entry.file_type() {
-            FileType::RegularFile => {
-                // let name = unsafe { OsStr::from_encoded_bytes_unchecked(entry.file_name().to_bytes()) };
-                let name = entry.file_name();
-                let _ = fcb(name, openat(parentdir, name)?);
-                // files.push(curpath.join(name).into());
-            },
-            FileType::Directory => {
-                if entry.file_name() == c"." || entry.file_name() == c".." {
-                    continue;
-                }
-                {
-                    let name = unsafe { OsStr::from_encoded_bytes_unchecked(entry.file_name().to_bytes()) };
-                    curpath.push(name);
-                }
-                // dirs.push(curpath.clone().into());
-                let _ = dcb(entry.file_name());
 
-                let newdirfd = opendirat(parentdir, entry.file_name())?;
-                let mut buf = Vec::with_capacity(4096);
-                let mut newiter = RawDir::new(&newdirfd, buf.spare_capacity_mut());
+    let mut buf = Vec::with_capacity(4096);
+    let mut iter = RawDir::new(&curdir, buf.spare_capacity_mut());
 
-                list_dir2_rec(curpath, &newdirfd, &mut newiter, fcb, dcb, depth + 1)?;
-                curpath.pop();
-            },
-            _ => {}
+    let mut it = iter.next();
+
+    let isempty = check_empty(it)?;
+
+    if depth > 0 {
+        if it.is_none() {
+            v.on_empty_dir(curname);
+        } else {
+            // okay so this never shows as empty because of . and .. are always returned
+            println!("dir {curname:?} {depth}");
+            v.on_dir(curname);
         }
+    }
+
+    loop {
+        if let Some(ref entry) = it {
+            let entry = entry.as_ref().map_err(|_| Error::Getdents)?;
+            let name = entry.file_name();
+            match entry.file_type() {
+                FileType::RegularFile => {
+                    // let name = unsafe { OsStr::from_encoded_bytes_unchecked(entry.file_name().to_bytes()) };
+                    let name = entry.file_name();
+                    let _ = v.on_file(name, openat(curdir, name)?);
+                },
+                FileType::Directory => {
+                    if entry.file_name() == c"." || entry.file_name() == c".." {
+                        it = iter.next();
+                        continue;
+                    }
+                    let newdirfd = opendirat(curdir, entry.file_name())?;
+                    let curname = entry.file_name();
+
+                    list_dir2_rec(curname, &newdirfd, v, depth + 1)?;
+                    v.leave_dir();
+                },
+                _ => {}
+            }
+        } else {
+            break;
+        }
+        it = iter.next();
     }
 
     Ok(())
 }
 
-pub fn list_dir<F: Fn(&CStr, File) -> (), D: Fn(&CStr) -> ()>(dir: &Path, fcb: F, dcb: D) -> Result<(), Error> {
-    let mut curpath = PathBuf::new();
+pub fn list_dir<V: Visitor>(dir: &Path, v: &V) -> Result<(), Error> {
+    let curname = CString::new(dir.as_os_str().as_bytes()).unwrap();
 
     let dirfd = opendir(dir)?;
-    let mut buf = Vec::with_capacity(4096);
-    let mut iter = RawDir::new(&dirfd, buf.spare_capacity_mut());
 
-    list_dir2_rec(&mut curpath, &dirfd, &mut iter, &fcb, &dcb, 0)?;
+    list_dir2_rec(curname.as_ref(), &dirfd, v, 0)?;
     Ok(())
 }
