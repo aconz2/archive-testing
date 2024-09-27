@@ -11,6 +11,9 @@ use memmap::MmapOptions;
 use std::os::unix::fs;
 use std::ptr;
 
+mod liblistdir;
+use liblistdir::{list_dir};
+
 // default fd table size is 64, we 3 + 1 open by default but we don't want to go to fd 257 because
 // that would trigger a realloc and then we waste, so this should always be 4 less than a power of
 // 2. Seems like diminishing returns
@@ -155,6 +158,25 @@ fn create_v0(args: &[String]) {
         let mut f = File::open(file).unwrap();
         io::copy(&mut f, &mut outwriter).unwrap();
     }
+}
+
+fn create_v1(args: &[String]) {
+    use std::ffi::CStr;
+
+    let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
+    let indir = args.get(1).ok_or(Error::NoOutfile).unwrap();
+    let indirpath = Path::new(indir);
+
+    fn on_file(name: &CStr, file: File) {
+        let len = file.metadata().unwrap().len();
+        println!("file {name:?} {len}");
+    }
+
+    fn on_dir(name: &CStr) {
+        println!("dir {name:?}");
+    }
+
+    list_dir(indirpath, on_file, on_dir).unwrap()
 }
 
 fn chroot(dir: &Path) {
@@ -320,6 +342,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
         Some("create_v0") => { create_v0(&args[2..]); },
+        Some("create_v1") => { create_v1(&args[2..]); },
         Some("unpack_v0") => { unpack_v0(&args[2..]); },
         Some("list_dirs") => { list_dirs(&args[2..]); },
         Some("make_malicious") => { make_malicious_archive(&args[2..]); },

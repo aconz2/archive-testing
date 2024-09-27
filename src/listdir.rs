@@ -1,9 +1,7 @@
-use std::path::Path;
-use std::ffi::OsString;
 use std::os::fd::{RawFd,FromRawFd,AsRawFd,OwnedFd};
 use std::fs::{ReadDir};
-use std::path::PathBuf;
-use std::ffi::{CStr,OsStr,CString};
+use std::path::{Path,PathBuf};
+use std::ffi::{OsString,CStr,OsStr,CString};
 use rustix::fs::{RawDir,FileType};
 use rustix::fd::IntoRawFd;
 use std::env;
