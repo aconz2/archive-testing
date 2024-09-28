@@ -262,9 +262,9 @@ fn create_v1(args: &[String]) {
 
 }
 
-fn openpath_at<Fd: AsRawFd>(fd: &Fd, name: &CStr, flags: libc::c_int) -> Result<OwnedFd, Error> {
+fn openfile_at<Fd: AsRawFd>(fd: &Fd, name: &CStr, flags: libc::c_int) -> Result<OwnedFd, Error> {
     let fd = unsafe {
-        let ret = libc::openat(fd.as_raw_fd(), name.as_ptr(), flags);
+        let ret = libc::openat(fd.as_raw_fd(), name.as_ptr(), flags, 0o666);
         if ret < 0 { return Err(Error::Open); }
         ret
     };
@@ -312,7 +312,7 @@ fn unpack_v1(args: &[String]) {
                 cur = &cur[1..];
                 let parent = stack.last().unwrap();
                 let name = unsafe { CStr::from_bytes_with_nul_unchecked(cur) };
-                let fd = openpath_at(parent, name, libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC).unwrap();
+                let fd = openfile_at(parent, name, libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC).unwrap();
                 let mut file = unsafe { File::from_raw_fd(fd.into_raw_fd()) };
                 let zbi = cur.iter().position(|&x| x == 0).unwrap(); // todo do better
                 cur = &cur[zbi+1..];
