@@ -1,18 +1,21 @@
-use std::env;
 use std::collections::HashSet;
-use std::path::Path;
-use std::io;
-use std::io::{stdin,BufRead,Write,BufWriter,Seek,SeekFrom};
+use std::env;
+use std::ffi::CStr;
 use std::ffi::OsString;
-use std::os::unix::prelude::OsStrExt;
-use std::os::fd::{FromRawFd,AsRawFd,IntoRawFd};
 use std::fs::File;
-use memmap::MmapOptions;
+use std::io::{stdin,BufRead,Write,BufWriter,Seek,SeekFrom};
+use std::io;
+use std::os::fd::{FromRawFd,AsRawFd,IntoRawFd,OwnedFd};
 use std::os::unix::fs;
+use std::os::unix::prelude::OsStrExt;
+use std::path::Path;
 use std::ptr;
 
+use memmap::MmapOptions;
+
 mod liblistdir;
-use liblistdir::{list_dir};
+
+use liblistdir::{Visitor,list_dir,opendirat,mkdirat};
 
 // default fd table size is 64, we 3 + 1 open by default but we don't want to go to fd 257 because
 // that would trigger a realloc and then we waste, so this should always be 4 less than a power of
@@ -24,6 +27,7 @@ enum Error {
     NoOutfile,
     CopyFileRange,
     Align,
+    Open,
 }
 
 fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
@@ -67,7 +71,7 @@ fn list_dirs(_args: &[String]) {
 fn align_to_4<W: Seek + Write>(writer: &mut W) -> Result<(), Error> {
     let pos = writer.stream_position().map_err(|_| Error::Align)?;
     let adj = 4 - (pos % 4);
-    for _ in 0..adj { writer.write(&[0]).map_err(|_| Error::Align)?; }
+    for _ in 0..adj { writer.write_all(&[0]).map_err(|_| Error::Align)?; }
     let pos = writer.stream_position().map_err(|_| Error::Align)?;
     //println!("wrote {} bytes of padding, pos now {}", adj, pos);
     assert!(pos % 4 == 0);
@@ -81,13 +85,13 @@ fn make_malicious_archive(args: &[String]) {
     let dirsb = b"../rdir\0/adir\0";
     let filesb = b"../rfile\0/afile\0";
     for i in vec![2, 2, dirsb.len(), filesb.len()] {
-        outwriter.write(&(i as u32).to_le_bytes()).unwrap();
+        outwriter.write_all(&(i as u32).to_le_bytes()).unwrap();
     }
-    outwriter.write(&dirsb[..]).unwrap();
-    outwriter.write(&filesb[..]).unwrap();
+    outwriter.write_all(&dirsb[..]).unwrap();
+    outwriter.write_all(&filesb[..]).unwrap();
     align_to_4(&mut outwriter).unwrap();
     for size in vec![0, 0] {
-        outwriter.write(&(size as u32).to_le_bytes()).unwrap();
+        outwriter.write_all(&(size as u32).to_le_bytes()).unwrap();
     }
 }
 
@@ -145,14 +149,14 @@ fn create_v0(args: &[String]) {
     println!("writing to {}", outname);
     println!("dirsb len {}", dirsb.len());
     for i in vec![dirs.len(), files.len(), dirsb.len(), filesb.len()] {
-        outwriter.write(&(i as u32).to_le_bytes()).unwrap();
+        outwriter.write_all(&(i as u32).to_le_bytes()).unwrap();
     }
-    outwriter.write(&dirsb).unwrap();
-    outwriter.write(&filesb).unwrap();
+    outwriter.write_all(&dirsb).unwrap();
+    outwriter.write_all(&filesb).unwrap();
     align_to_4(&mut outwriter).unwrap();
 
     for size in sizes {
-        outwriter.write(&(size as u32).to_le_bytes()).unwrap();
+        outwriter.write_all(&(size as u32).to_le_bytes()).unwrap();
     }
     for file in &files {
         let mut f = File::open(file).unwrap();
@@ -163,52 +167,189 @@ fn create_v0(args: &[String]) {
 /// v1 archive format
 /// message+
 /// message =
-/// file: <tag> <name zero term> <varint size> <blob>
-/// dir:  <tag> <name zero term>
-/// push: <tag>
-/// pop:  <tag>
+///   | file: <tag> <name zero term> <u32le> <blob>
+///   | dir:  <tag> <name zero term>
+///   | pop:  <tag>
+///
+/// alternate format would be to buffer the names and sizes and just dump
+/// the blob data so, this avoids the write per message but requires buffering
+/// <blob size> <blob data> <message+>
+/// message =
+///   | file: <tag> <name zero term> <u32le>
+///   | dir:  <tag> <name zero term>
+///   | pop:  <tag>
+/// 
+/// on the decode side, we'll probably mmap it so not much different
 
-use liblistdir::Visitor;
-use std::ffi::CStr;
-
-struct MyVisitor<W: Write> {
-    writer: BufWriter<W>,
+enum ArchiveFormat1Tag {
+    File = 1,
+    Dir = 2,
+    Pop = 3,
 }
 
-impl<W: Write> MyVisitor<W> {
-    fn new(file: W) -> MyVisitor<W> {
-        MyVisitor {
-            writer: BufWriter::new(file)
+impl TryFrom<&u8> for ArchiveFormat1Tag {
+    type Error = ();
+    fn try_from(x: &u8) -> Result<ArchiveFormat1Tag, ()> {
+        match x {
+            // TODO what is the right way to do this?
+            1 => Ok(ArchiveFormat1Tag::File),
+            2 => Ok(ArchiveFormat1Tag::Dir),
+            3 => Ok(ArchiveFormat1Tag::Pop),
+            _ => Err(()),
         }
     }
 }
 
-impl<W: Write> Visitor for MyVisitor<W> {
-    fn on_file(&mut self, name: &CStr, file: File) -> () {
+struct MyVisitor<W: Write> {
+    out: W,
+    buf: Vec<u8>,
+}
+
+impl<W: Write + Seek> MyVisitor<W> {
+    fn new(file: W) -> MyVisitor<W> {
+        MyVisitor {
+            out: file,
+            buf: Vec::with_capacity(512), // names at most 255 + 1 \0 tag and u32le
+        }
+    }
+
+    fn into_file(self) -> W {
+        self.out
+    }
+}
+
+impl<W: Write + Seek> Visitor for MyVisitor<W> {
+    fn on_file(&mut self, name: &CStr, mut file: File) -> () {
         let len = file.metadata().unwrap().len();
-        self.writer.write(&(len as u32).to_le_bytes()).unwrap();
-        std::io::copy(file, self.writer);
+
+        self.buf.clear();
+        self.buf.push(ArchiveFormat1Tag::File as u8);
+        self.buf.extend_from_slice(name.to_bytes_with_nul());
+        self.buf.extend_from_slice(&(len as u32).to_le_bytes());
+        self.out.write_all(self.buf.as_slice()).unwrap();
+
+        // TODO how to pass errors back through appropriately?
+        // TODO io::copy tries a copy_file_range first then falls back to sendfile when the two fds
+        // are on different filesystems; this is happening now b/c I'm going from a disk to tmpfs
+        // but my initial testing was tmpfs -> tmpfs , inside the vm it will be pmem -> tmpfs so
+        // I think we'll want to instead always use sendfile (if we were to go that route, but
+        // write seems good enough)
+        io::copy(&mut file, &mut self.out).unwrap();
     }
 
     fn on_dir(&mut self, name: &CStr) -> () {
-        println!("dir {name:?}");
+        self.buf.clear();
+        self.buf.push(ArchiveFormat1Tag::Dir as u8);
+        self.buf.extend_from_slice(name.to_bytes_with_nul());
+        self.out.write_all(self.buf.as_slice()).unwrap();
     }
 
     fn leave_dir(&mut self) -> () {
-        println!("leaving");
+        self.out.write_all(&[ArchiveFormat1Tag::Pop as u8]).unwrap();
     }
 }
 
 fn create_v1(args: &[String]) {
-    use std::ffi::CStr;
-
     let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let indir = args.get(1).ok_or(Error::NoOutfile).unwrap();
     let indirpath = Path::new(indir);
     let fileout = File::create(outname).unwrap();
     let mut v: MyVisitor<File> = MyVisitor::new(fileout);
+    list_dir(indirpath, &mut v).unwrap();
+    let outfile = v.into_file();
+    let len = outfile.metadata().unwrap().len();
+    println!("outfile has total len={len}"); 
 
-    list_dir(indirpath, &mut v).unwrap()
+}
+
+fn openpath_at<Fd: AsRawFd>(fd: &Fd, name: &CStr, flags: libc::c_int) -> Result<OwnedFd, Error> {
+    let fd = unsafe {
+        let ret = libc::openat(fd.as_raw_fd(), name.as_ptr(), flags);
+        if ret < 0 { return Err(Error::Open); }
+        ret
+    };
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn openpath_at_cwd(name: &CStr) -> Result<OwnedFd, Error> {
+    let fd = unsafe {
+        let ret = libc::openat(libc::AT_FDCWD, name.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
+        if ret < 0 { return Err(Error::Open); }
+        ret
+    };
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+// from rustdocs
+fn read_le_u32(input: &mut &[u8]) -> u32 {
+    let (int_bytes, rest) = input.split_at(std::mem::size_of::<u32>());
+    *input = rest;
+    u32::from_le_bytes(int_bytes.try_into().unwrap())
+}
+
+fn unpack_v1(args: &[String]) {
+    let inname = args.get(0).ok_or(Error::NoOutfile).unwrap();
+    let outname = args.get(1).ok_or(Error::NoOutfile).unwrap();
+
+    let inpath = Path::new(&inname);
+    let outpath = Path::new(&outname);
+    assert!(inpath.is_file(), "{:?} should be a file", inpath);
+    assert!(outpath.is_dir(), "{:?} should be a dir", outpath);
+
+    let infile = File::open(inpath).unwrap();
+    let mmap = unsafe { MmapOptions::new().map(&infile).unwrap() };
+
+    chroot(&outpath);
+
+    let mut stack: Vec<OwnedFd> = Vec::with_capacity(32);  // always non-empty
+    stack.push(openpath_at_cwd(c".").unwrap());
+
+                                                                     //libc::O_PATH | libc::O_CLOEXEC
+    let mut cur = &mmap[..];
+    loop {
+        match cur.get(0).map(|x| x.try_into()) {
+            Some(Ok(ArchiveFormat1Tag::File)) => {
+                cur = &cur[1..];
+                let parent = stack.last().unwrap();
+                let name = unsafe { CStr::from_bytes_with_nul_unchecked(cur) };
+                let fd = openpath_at(parent, name, libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC).unwrap();
+                let mut file = unsafe { File::from_raw_fd(fd.into_raw_fd()) };
+                let zbi = cur.iter().position(|&x| x == 0).unwrap(); // todo do better
+                cur = &cur[zbi+1..];
+                let len = read_le_u32(&mut cur) as usize;
+                file.write_all(&cur[..len]).unwrap();
+                cur = &cur[len..];
+            },
+            Some(Ok(ArchiveFormat1Tag::Dir)) => {
+                cur = &cur[1..];
+                let parent = stack.last().unwrap();
+                let name = unsafe { CStr::from_bytes_with_nul_unchecked(cur) };
+                mkdirat(parent, name).unwrap();
+                let zbi = cur.iter().position(|&x| x == 0).unwrap(); // todo do better
+                cur = &cur[zbi+1..];
+                if cur[0] == (ArchiveFormat1Tag::Pop as u8) {
+                    // fast path for empty dir, never open the dir and push it
+                    cur = &cur[1..];
+                } else {
+                    let fd = opendirat(parent, name).unwrap();
+                    stack.push(fd);
+                }
+            },
+            Some(Ok(ArchiveFormat1Tag::Pop)) => {
+                cur = &cur[1..];
+                // always expected to be nonempty, todo handle gracefully for malicious archives
+                stack.pop().unwrap();
+            },
+            Some(Err(_)) => {
+                let b = cur[0];
+                println!("oh no got bad tag byte {b}");
+                assert!(false);
+            },
+            None => {
+                break;
+            }
+        }
+    }
 }
 
 fn chroot(dir: &Path) {
@@ -324,6 +465,7 @@ fn unpack_v0(args: &[String]) {
                 assert!(fd > 0, "open failed");
                 File::from_raw_fd(fd)
             };
+            // hmm why didn't i use io::copy here originally?
             copy_file_range_all(&mut infile, &mut fileout, size).unwrap();
             let zbi = filenames_cur.iter().position(|&x| x == 0).unwrap();
             filenames_cur = &filenames_cur[zbi+1..];
@@ -376,6 +518,7 @@ fn main() {
         Some("create_v0") => { create_v0(&args[2..]); },
         Some("create_v1") => { create_v1(&args[2..]); },
         Some("unpack_v0") => { unpack_v0(&args[2..]); },
+        Some("unpack_v1") => { unpack_v1(&args[2..]); },
         Some("list_dirs") => { list_dirs(&args[2..]); },
         Some("make_malicious") => { make_malicious_archive(&args[2..]); },
         _ => {
