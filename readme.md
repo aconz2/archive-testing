@@ -705,3 +705,7 @@ close(5)                                = 0
 ```
 
 We do the same chroot thing to guard against path traversals, then open our root dirfd (4) and then use `mkdirat` and `openat` to write `.git/description`. Then we see an example of an empty directory called `empty` which we only create, but do not open because we immediately see a `pop` bytecode.
+
+## benchmarking
+
+Initial results are pretty much on par with v0, though I haven't done the `close_range` optimization yet in v1 so I expect them to improve a tad. Though I'm actually not sure I can do that in v1 because we keep directory fd's open and our fd range will be a mix of file and dirs if we do a deferred close. Maybe uring will make an entrance and we can just periodically do a bulk close. Overkill I know. Since I'm thinking about uring, it would be silly only to use it for close, but you have to be slightly careful with arranging work. So we iterate through the bytecode and prepare our submission q and submit when full, but once we hit a `dir` bytecode, we have to submit what we have (except for the `dir;pop` case), because later files will need the fd of that dir for openat. For packing there is no `IORING_OP_SENDFILE` which is too bad.

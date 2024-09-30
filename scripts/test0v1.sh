@@ -85,16 +85,16 @@ function hyperfineunpack() {
 }
 
 
-for dir in archive-testing; do
+for dir in archive-testing linux; do
     hyperfinepack $dir
     hyperfineunpack $dir
 
     h=$(hashdir /tmp/$dir.copy)
-    inspectdir /tmp/$dir.copy > /tmp/$dir.copy.inspection
+    # inspectdir /tmp/$dir.copy > /tmp/$dir.copy.inspection
     printf "%10s %s\n" "expected" "$h"
-    checkdest unpack_v1 "$bin unpack_v1 /tmp/$dir.v1 /tmp/dest"
     checkdest tar "tar --extract --file /tmp/$dir.tar --directory /tmp/dest"
     checkdest unpack_v0 "$bin unpack_v0 /tmp/$dir.v0 /tmp/dest"
+    checkdest unpack_v1 "$bin unpack_v1 /tmp/$dir.v1 /tmp/dest"
 done
 
 
@@ -113,8 +113,14 @@ function testit() {
     perfit $@
 }
 
-# header 'tracing atv0 archive-testing'
-# testit $bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest
-#
-# header 'tracing atv1 archive-testing'
-# testit $bin unpack_v1 /tmp/archive-testing.v1 /tmp/dest
+header 'tracing atv0 archive-testing'
+testit $bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest
+
+header 'tracing atv1 archive-testing'
+testit $bin unpack_v1 /tmp/archive-testing.v1 /tmp/dest
+
+header 'tracing atv0 linux'
+testit $bin unpack_v0 /tmp/linux.v0 /tmp/dest
+
+header 'tracing atv1 linux'
+testit $bin unpack_v1 /tmp/linux.v1 /tmp/dest
