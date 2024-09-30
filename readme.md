@@ -61,7 +61,7 @@ Note that I added a small patch to `perf` to give the user/sys breakdown with pe
                         double ru_stime = timeval2double(&config->ru_data.ru_stime);
 +                       double ru_utime_p = ru_utime / total * 100;
 +                       double ru_stime_p = ru_stime / total * 100;
- 
+
                         fprintf(output, "\n\n");
 -                       fprintf(output, " %17.9f seconds user\n", ru_utime);
 -                       fprintf(output, " %17.9f seconds sys\n", ru_stime);
@@ -102,27 +102,27 @@ dirsb len 12
 Benchmark 1: tar
   Time (mean ± σ):       1.3 ms ±   0.0 ms    [User: 0.3 ms, System: 0.9 ms]
   Range (min … max):     1.3 ms …   1.5 ms    916 runs
- 
+
   Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs.
- 
+
 Benchmark 2: cpio
   Time (mean ± σ):     855.2 µs ±  25.4 µs    [User: 256.8 µs, System: 538.0 µs]
   Range (min … max):   818.0 µs … 957.0 µs    1100 runs
- 
+
   Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs.
- 
+
 Benchmark 3: atv0
   Time (mean ± σ):     576.3 µs ±  28.7 µs    [User: 274.0 µs, System: 240.9 µs]
   Range (min … max):   546.9 µs … 704.7 µs    1189 runs
- 
+
   Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs.
- 
+
 Benchmark 4: atv0cf
   Time (mean ± σ):     580.7 µs ±  28.2 µs    [User: 273.2 µs, System: 246.0 µs]
   Range (min … max):   549.3 µs … 696.8 µs    1170 runs
- 
+
   Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs.
- 
+
 Summary
   atv0 ran
     1.01 ± 0.07 times faster than atv0cf
@@ -134,19 +134,19 @@ Summary
 Benchmark 1: tar
   Time (mean ± σ):      1.383 s ±  0.004 s    [User: 0.094 s, System: 1.280 s]
   Range (min … max):    1.375 s …  1.389 s    10 runs
- 
+
 Benchmark 2: cpio
   Time (mean ± σ):      3.563 s ±  0.004 s    [User: 0.403 s, System: 3.137 s]
   Range (min … max):    3.556 s …  3.572 s    10 runs
- 
+
 Benchmark 3: atv0
   Time (mean ± σ):      1.122 s ±  0.005 s    [User: 0.012 s, System: 1.103 s]
   Range (min … max):    1.111 s …  1.127 s    10 runs
- 
+
 Benchmark 4: atv0cf
   Time (mean ± σ):      1.123 s ±  0.001 s    [User: 0.015 s, System: 1.102 s]
   Range (min … max):    1.120 s …  1.124 s    10 runs
- 
+
 Summary
   atv0 ran
     1.00 ± 0.00 times faster than atv0cf
@@ -193,16 +193,16 @@ Summary
 
  Performance counter stats for 'tar --extract --file /tmp/linux.tar --directory /tmp/dest':
 
-          1,393.01 msec task-clock:u                     #    1.002 CPUs utilized             
-                 0      context-switches:u               #    0.000 /sec                      
-                 0      cpu-migrations:u                 #    0.000 /sec                      
-               154      page-faults:u                    #  110.552 /sec                      
-       336,905,533      cycles:u                         #    0.242 GHz                       
-       144,222,037      stalled-cycles-frontend:u        #   42.81% frontend cycles idle      
-       489,744,079      instructions:u                   #    1.45  insn per cycle            
-                                                  #    0.29  stalled cycles per insn   
-        95,070,579      branches:u                       #   68.248 M/sec                     
-         3,007,216      branch-misses:u                  #    3.16% of all branches           
+          1,393.01 msec task-clock:u                     #    1.002 CPUs utilized
+                 0      context-switches:u               #    0.000 /sec
+                 0      cpu-migrations:u                 #    0.000 /sec
+               154      page-faults:u                    #  110.552 /sec
+       336,905,533      cycles:u                         #    0.242 GHz
+       144,222,037      stalled-cycles-frontend:u        #   42.81% frontend cycles idle
+       489,744,079      instructions:u                   #    1.45  insn per cycle
+                                                  #    0.29  stalled cycles per insn
+        95,070,579      branches:u                       #   68.248 M/sec
+         3,007,216      branch-misses:u                  #    3.16% of all branches
 
        1.389996408 seconds time elapsed
 
@@ -247,16 +247,16 @@ Summary
 
  Performance counter stats for './asstdin /tmp/linux.cpio cpio --extract --directory /tmp/dest':
 
-          3,628.70 msec task-clock:u                     #    0.999 CPUs utilized             
-                 0      context-switches:u               #    0.000 /sec                      
-                 0      cpu-migrations:u                 #    0.000 /sec                      
-               117      page-faults:u                    #   32.243 /sec                      
-     1,184,610,292      cycles:u                         #    0.326 GHz                       
-       603,041,213      stalled-cycles-frontend:u        #   50.91% frontend cycles idle      
-     1,299,297,947      instructions:u                   #    1.10  insn per cycle            
-                                                  #    0.46  stalled cycles per insn   
-       256,888,594      branches:u                       #   70.794 M/sec                     
-        22,860,064      branch-misses:u                  #    8.90% of all branches           
+          3,628.70 msec task-clock:u                     #    0.999 CPUs utilized
+                 0      context-switches:u               #    0.000 /sec
+                 0      cpu-migrations:u                 #    0.000 /sec
+               117      page-faults:u                    #   32.243 /sec
+     1,184,610,292      cycles:u                         #    0.326 GHz
+       603,041,213      stalled-cycles-frontend:u        #   50.91% frontend cycles idle
+     1,299,297,947      instructions:u                   #    1.10  insn per cycle
+                                                  #    0.46  stalled cycles per insn
+       256,888,594      branches:u                       #   70.794 M/sec
+        22,860,064      branch-misses:u                  #    8.90% of all branches
 
        3.633335330 seconds time elapsed
 
@@ -306,16 +306,16 @@ use_copy_file=false
 
  Performance counter stats for '/var/home/andrew/Repos/archive-testing/target/release/archive-testing unpack_v0 /tmp/linux.v0 /tmp/dest':
 
-          1,127.08 msec task-clock:u                     #    1.003 CPUs utilized             
-                 0      context-switches:u               #    0.000 /sec                      
-                 0      cpu-migrations:u                 #    0.000 /sec                      
-                79      page-faults:u                    #   70.093 /sec                      
-        35,213,529      cycles:u                         #    0.031 GHz                       
-        19,637,422      stalled-cycles-frontend:u        #   55.77% frontend cycles idle      
-        26,758,596      instructions:u                   #    0.76  insn per cycle            
-                                                  #    0.73  stalled cycles per insn   
-         8,777,267      branches:u                       #    7.788 M/sec                     
-           582,587      branch-misses:u                  #    6.64% of all branches           
+          1,127.08 msec task-clock:u                     #    1.003 CPUs utilized
+                 0      context-switches:u               #    0.000 /sec
+                 0      cpu-migrations:u                 #    0.000 /sec
+                79      page-faults:u                    #   70.093 /sec
+        35,213,529      cycles:u                         #    0.031 GHz
+        19,637,422      stalled-cycles-frontend:u        #   55.77% frontend cycles idle
+        26,758,596      instructions:u                   #    0.76  insn per cycle
+                                                  #    0.73  stalled cycles per insn
+         8,777,267      branches:u                       #    7.788 M/sec
+           582,587      branch-misses:u                  #    6.64% of all branches
 
        1.123853820 seconds time elapsed
 
@@ -366,16 +366,16 @@ use_copy_file=true
 
  Performance counter stats for '/var/home/andrew/Repos/archive-testing/target/release/archive-testing unpack_v0 /tmp/linux.v0 /tmp/dest copy_file_range':
 
-          1,128.95 msec task-clock:u                     #    1.003 CPUs utilized             
-                 0      context-switches:u               #    0.000 /sec                      
-                 0      cpu-migrations:u                 #    0.000 /sec                      
-                80      page-faults:u                    #   70.862 /sec                      
-        35,210,566      cycles:u                         #    0.031 GHz                       
-        18,552,792      stalled-cycles-frontend:u        #   52.69% frontend cycles idle      
-        23,260,195      instructions:u                   #    0.66  insn per cycle            
-                                                  #    0.80  stalled cycles per insn   
-         8,299,573      branches:u                       #    7.352 M/sec                     
-           583,169      branch-misses:u                  #    7.03% of all branches           
+          1,128.95 msec task-clock:u                     #    1.003 CPUs utilized
+                 0      context-switches:u               #    0.000 /sec
+                 0      cpu-migrations:u                 #    0.000 /sec
+                80      page-faults:u                    #   70.862 /sec
+        35,210,566      cycles:u                         #    0.031 GHz
+        18,552,792      stalled-cycles-frontend:u        #   52.69% frontend cycles idle
+        23,260,195      instructions:u                   #    0.66  insn per cycle
+                                                  #    0.80  stalled cycles per insn
+         8,299,573      branches:u                       #    7.352 M/sec
+           583,169      branch-misses:u                  #    7.03% of all branches
 
        1.125577097 seconds time elapsed
 
@@ -630,7 +630,7 @@ close(6)                                = 0
 
 * `fs::read_dir` uses a `libc::DIR` under the hood, so we get slightly different results when using glibc vs musl.
   * `opendir` in [glibc](https://elixir.bootlin.com/glibc/glibc-2.40/source/sysdeps/unix/sysv/linux/opendir.c#L81) calls stat to get the blksize to compute an allocation, though it then uses 32k if it is below that. You can see in smallish dirs (`target/debug/deps` has 29 files for example) that we only get up to `1584`, so not sure where they came up with 32k.
-  * `opendir` in [musl](http://git.musl-libc.org/cgit/musl/tree/src/dirent/opendir.c) uses a fixed size `DIR` with a 2k buffer so it's getdents calls are always with 2048. This means it avoids a stat call, but it [does call](http://git.musl-libc.org/cgit/musl/tree/src/fcntl/open.c) `fcntl` with cloexec even though it already passed it in? 
+  * `opendir` in [musl](http://git.musl-libc.org/cgit/musl/tree/src/dirent/opendir.c) uses a fixed size `DIR` with a 2k buffer so it's getdents calls are always with 2048. This means it avoids a stat call, but it [does call](http://git.musl-libc.org/cgit/musl/tree/src/fcntl/open.c) `fcntl` with cloexec even though it already passed it in?
   * notice that because there is no `opendirat(DIR, char*)` (except there is a [hidden one in glibc](https://elixir.bootlin.com/glibc/glibc-2.40/source/sysdeps/unix/sysv/linux/opendir.c#L69), the calls to `open{at}` require us to combine the pathname like `./target/debug/deps` every time, and the kernel has to traverse that path in depth
     * there is an `fdopendir` that I tried using, so I could essentially do `fdopendir(openat(dirfd, "debug"))`, but that is sad because in [musl](http://git.musl-libc.org/cgit/musl/tree/src/dirent/fdopendir.c) it does a `fstat,fcntl(F_SETFD, FD_CLOEXEC)` and [glibc](https://elixir.bootlin.com/glibc/glibc-2.40/source/sysdeps/unix/sysv/linux/fdopendir.c#L28) also does `fstat,fcntl(F_GETFL),fcntl(F_SETFD, FD_CLOEXEC)`
     * this gets worse if instead of asking it to list `.`, we give it an abs path like `/run/output`, since that prefix now has to appear in every open call (I guess you could chdir but no)
