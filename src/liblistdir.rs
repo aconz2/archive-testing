@@ -46,6 +46,16 @@ pub fn opendirat<Fd: AsRawFd>(fd: &Fd, name: &CStr) -> Result<OwnedFd, Error> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+// yeah I know this is all duplicated
+pub fn openpathat<Fd: AsRawFd>(fd: &Fd, name: &CStr) -> Result<OwnedFd, Error> {
+    let fd = unsafe {
+        let ret = libc::openat(fd.as_raw_fd(), name.as_ptr(), libc::O_DIRECTORY | libc::O_PATH | libc::O_CLOEXEC);
+        if ret < 0 { return Err(Error::Open); }
+        ret
+    };
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
 pub fn mkdirat<Fd: AsRawFd>(fd: &Fd, name: &CStr) -> Result<(), Error> {
     unsafe {
         let ret = libc::mkdirat(fd.as_raw_fd(), name.as_ptr(), 0o755);
@@ -61,7 +71,7 @@ pub fn mkdirat<Fd: AsRawFd>(fd: &Fd, name: &CStr) -> Result<(), Error> {
 //     iter: RawDir<'a, &File>,
 //     buf: Vec<u8>,
 // }
-// 
+//
 // impl DIR<'_> {
 //     fn new(dir: &Path) -> Result<Self, Error> {
 //         let file = opendir(dir)?;

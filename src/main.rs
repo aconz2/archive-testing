@@ -15,7 +15,7 @@ use memmap::MmapOptions;
 
 mod liblistdir;
 
-use liblistdir::{Visitor,list_dir,opendirat,mkdirat};
+use liblistdir::{Visitor,list_dir,mkdirat,openpathat};
 
 // default fd table size is 64, we 3 + 1 open by default but we don't want to go to fd 257 because
 // that would trigger a realloc and then we waste, so this should always be 4 less than a power of
@@ -299,7 +299,7 @@ impl Visitor for MyVisitor {
         // write seems good enough)
         // docs say it is inadvisable to write through get_mut, but ...
         let outfile = self.writer.get_mut();
-        // io::copy(&mut file, &mut outfile).unwrap();
+        // io::copy(&mut file, outfile).unwrap();
         // TODO maybe configurable whether to use copy_file_range or sendfile
         sendfile_all(&mut file, outfile, len).unwrap();
     }
@@ -335,6 +335,7 @@ fn pack_v1(args: &[String]) {
 
 }
 
+// TODO these are semi duplicated with stuff in liblistdir
 fn openfile_at<Fd: AsRawFd>(fd: &Fd, name: &CStr, flags: libc::c_int) -> Result<OwnedFd, Error> {
     let fd = unsafe {
         let ret = libc::openat(fd.as_raw_fd(), name.as_ptr(), flags, 0o666);
@@ -346,7 +347,7 @@ fn openfile_at<Fd: AsRawFd>(fd: &Fd, name: &CStr, flags: libc::c_int) -> Result<
 
 fn openpath_at_cwd(name: &CStr) -> Result<OwnedFd, Error> {
     let fd = unsafe {
-        let ret = libc::openat(libc::AT_FDCWD, name.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
+        let ret = libc::openat(libc::AT_FDCWD, name.as_ptr(), libc::O_DIRECTORY | libc::O_PATH | libc::O_CLOEXEC);
         if ret < 0 { return Err(Error::Open); }
         ret
     };
@@ -377,7 +378,6 @@ fn unpack_v1(args: &[String]) {
     let mut stack: Vec<OwnedFd> = Vec::with_capacity(32);  // always non-empty
     stack.push(openpath_at_cwd(c".").unwrap());
 
-                                                                     //libc::O_PATH | libc::O_CLOEXEC
     let mut cur = &mmap[..];
     loop {
         match cur.get(0).map(|x| x.try_into()) {
@@ -404,7 +404,7 @@ fn unpack_v1(args: &[String]) {
                     // fast path for empty dir, never open the dir and push it
                     cur = &cur[1..];
                 } else {
-                    let fd = opendirat(parent, name).unwrap();
+                    let fd = openpathat(parent, name).unwrap();
                     stack.push(fd);
                 }
             },

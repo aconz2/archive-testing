@@ -640,3 +640,68 @@ close(6)                                = 0
 * `walkdir` looks identical to `fs::read_dir` in syscalls, though it does print with a leading `./` of the passed in directory so the output doesn't match exactly the others
 * see `scripts/testlistdir.sh` that runs everything
 * for small dirs we're chasing microseconds but it's been a good investigation
+
+## actually packing now
+
+So let's use `getdents64` directly to walk the input dir, now we need to write things out in a format that is good for packing and unpacking. For that I went the route I alluded to in the beginning about a bytecode. There are 3 types of messages in the v1 pack format, `file name len data`, `dir name`, and `pop`. Names are null terminated so they can be passed directly to `openat` on unpack, len is u32le, and we use a whole byte for the leading tag of `file/dir/pop`. We can write out these messages in depth first order and the unpacker can read them in the same order and execute an appropriate action to create. We maintain a non-empty stack of directory fd's (first entry is our root unpacking directory). The actions are then:
+
+* `file`: create file of `name` in the dirfd at top of stack and write the `data` of `len`
+* `dir`: create dir of `name` in the dirfd, open it as an `O_PATH` and push this fd on the stack
+* `pop`: close the top of stack and pop it
+
+There is one peephole optimization that we do on unpacking where `dir;pop` is a non-empty directory and we can skip opening it (since we'd just close it right away). Supporting empty dirs is a potential design choice, but simpler to always write them out. Note that `getdents64` always returns the two entries `.` and `..` and while I think they might always be the first two, I'm not certain that is specified anywhere.
+
+One interesting thing I discovered looking at the strace of the packing was that `File::metadata` uses `statx` when looking up the len of the file (since we need to write it into the output stream first) with `STATX_ALL`. I only need the size and statx lets you pass a mask to tell it what you want, but it looks like the kernel copies the whole thing regardless and a) has to copy more (144 vs 256 byte for `struct stat` vs `struct statx`) and b) does more work in statx; they both call through to `vfs_getattr` but `vfs_statx` does more extra stuff than `vfs_stat`. I imagine that mask is more useful for a fs that isn't assumed tmpfs. So I'm using an fstat. I imagine the difference is in the noise but :shrug:.
+
+Another thing is that rust `io::copy` will first stat both the fd's and then try to do a `copy_file_range` and fallback to `sendfile` if it fails, which it will when the source and destination aren't on the same filesystem, like when copying from `.` (on btrfs in my case) to `/tmp` (on tmpfs). So that is 2 stat's per file and a `copy_file_range` that will fail on every file, so `3N` unnecessary syscalls for our case. So for my use case, I know I'll be writing from tmpfs to pmem which can't use `copy_file_range`, so I switched to using `sendfile` directly and I have to call `fstat` up front to get the file length. Here is a the trace with `io::copy` writing out `.git/description`
+
+```
+openat(4, ".git", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 5
+getdents64(5, 0x5576b31e2d20 /* 13 entries */, 4096) = 376
+openat(5, "description", O_RDONLY|O_CLOEXEC) = 6
+fstat(6, {st_mode=S_IFREG|0644, st_size=73, ...}) = 0                                    <- this is us getting the file size
+write(3, "\2.git\0\1description\0I\0\0\0", 23) = 23                                      <- writing the "bytecode"
+statx(6, "", AT_STATX_SYNC_AS_STAT|AT_EMPTY_PATH, STATX_ALL, ...) = 0                    <- io::copy doing statx on infd
+statx(3, "", AT_STATX_SYNC_AS_STAT|AT_EMPTY_PATH, STATX_ALL, ...) = 0                    <- io::copy doing statx on outfd
+copy_file_range(6, NULL, 3, NULL, 1073741824, 0) = -1 EXDEV (Invalid cross-device link)  <- io::copy attempt 1
+sendfile(3, 6, NULL, 2147479552)        = 73
+sendfile(3, 6, NULL, 2147479552)        = 0
+close(6)                                = 0
+```
+
+You can also see it [calls sendfile](https://github.com/rust-lang/rust/blob/eeb90cda1969383f56a2637cbd3037bdf598841c/library/std/src/sys/pal/unix/kernel_copy.rs#L228)  with a `max_write` (I think to support streaming fd's) and so it has to follow up with another `sendfile` until it gets a 0! So now we're actually at `4N` syscalls that we can eliminate! Compare that with this trace just using `sendfile` directly:
+
+```
+openat(4, ".git", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 5
+getdents64(5, 0x555d4437cd20 /* 13 entries */, 4096) = 376
+openat(5, "description", O_RDONLY|O_CLOEXEC) = 6
+fstat(6, {st_mode=S_IFREG|0644, st_size=73, ...}) = 0
+write(3, "\2.git\0\1description\0I\0\0\0", 23) = 23
+sendfile(3, 6, NULL, 73)                = 73
+close(6)                                = 0
+```
+
+Now that looks nice!
+
+On the unpacking side for v1, the trace looks like:
+
+```
+...
+chroot("/tmp/dest")                     = 0
+chdir("/")                              = 0
+
+openat(AT_FDCWD, ".", O_RDONLY|O_CLOEXEC|O_PATH|O_DIRECTORY) = 4
+mkdirat(4, ".git", 0755)                = 0
+openat(4, ".git", O_RDONLY|O_CLOEXEC|O_PATH|O_DIRECTORY) = 5
+openat(5, "description", O_WRONLY|O_CREAT|O_CLOEXEC, 0666) = 6
+write(6, "Unnamed repository; edit this fi"..., 73) = 73
+close(6)                                = 0
+...
+
+mkdirat(4, "empty", 0755)               = 0
+openat(4, "readme.md", O_WRONLY|O_CREAT|O_CLOEXEC, 0666) = 5
+write(5, "This is a little experiment on f"..., 41994) = 41994
+close(5)                                = 0
+```
+
+We do the same chroot thing to guard against path traversals, then open our root dirfd (4) and then use `mkdirat` and `openat` to write `.git/description`. Then we see an example of an empty directory called `empty` which we only create, but do not open because we immediately see a `pop` bytecode.
