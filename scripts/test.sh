@@ -36,7 +36,7 @@ for dir in linux archive-testing; do
 
     if [ ! -f /tmp/$dir.v0 ]; then
         echo "-- creating $dir v0"
-        time $bin create_v0 /tmp/$dir.v0 < file-list
+        time $bin pack_v0 /tmp/$dir.v0 < file-list
         echo "--"
     fi
 

@@ -73,10 +73,11 @@ fn list_dirs(_args: &[String]) {
 
 fn align_to_4<W: Seek + Write>(writer: &mut W) -> Result<(), Error> {
     let pos = writer.stream_position().map_err(|_| Error::Align)?;
+    let posorig = pos;
+    if pos % 4 == 0 { return Ok(()); }
     let adj = 4 - (pos % 4);
     for _ in 0..adj { writer.write_all(&[0]).map_err(|_| Error::Align)?; }
     let pos = writer.stream_position().map_err(|_| Error::Align)?;
-    //println!("wrote {} bytes of padding, pos now {}", adj, pos);
     assert!(pos % 4 == 0);
     Ok(())
 }
@@ -158,6 +159,10 @@ fn pack_v0(args: &[String]) {
     outwriter.write_all(&filesb).unwrap();
     align_to_4(&mut outwriter).unwrap();
 
+    {
+        let filesizes_start = outwriter.stream_position().unwrap();
+        println!("filesizes_start={filesizes_start}");
+    }
     for size in sizes {
         outwriter.write_all(&(size as u32).to_le_bytes()).unwrap();
     }
@@ -331,7 +336,7 @@ fn pack_v1(args: &[String]) {
     list_dir(indirpath, &mut visitor).unwrap();
     let outfile = visitor.into_file();
     let len = outfile.metadata().unwrap().len();
-    println!("outfile has total len={len}");
+    // println!("outfile has total len={len}");
 
 }
 
@@ -497,7 +502,7 @@ fn unpack_v0(args: &[String]) {
             false
         }
     };
-    println!("use_copy_file={}", use_copy_file);
+    //println!("use_copy_file={}", use_copy_file);
     let inpath = Path::new(&inname);
     let outpath = Path::new(&outname);
     assert!(inpath.is_file(), "{:?} should be a file", inpath);
@@ -610,6 +615,7 @@ fn main() {
         Some("list_dirs") => { list_dirs(&args[2..]); },
         Some("make_malicious") => { make_malicious_archive(&args[2..]); },
         _ => {
+            println!("got args={args:?}");
             println!("pack_v0 <output-file> < <file-list>");
             println!("pack_v1 <input-dir> <output-file>");
             println!("unpack_v0 <input-file> <output-dir> [copy_file_range]");
