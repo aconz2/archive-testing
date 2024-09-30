@@ -28,6 +28,9 @@ enum Error {
     CopyFileRange,
     Align,
     Open,
+    Write,
+    Statx,
+    Fstat,
 }
 
 fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
@@ -96,7 +99,7 @@ fn make_malicious_archive(args: &[String]) {
 }
 
 /// v0 archive format
-/// num_dirs: u32le 
+/// num_dirs: u32le
 /// num_files: u32le
 /// dirnames_size: u32le
 /// filenames_size: u32le
@@ -109,7 +112,7 @@ fn make_malicious_archive(args: &[String]) {
 /// input is line separated pathnames relative to cwd
 /// ---
 /// args <output file>
-fn create_v0(args: &[String]) {
+fn pack_v0(args: &[String]) {
     let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let outfile = File::create(outname).unwrap();
     let mut outwriter = BufWriter::new(outfile);
@@ -178,7 +181,7 @@ fn create_v0(args: &[String]) {
 ///   | file: <tag> <name zero term> <u32le>
 ///   | dir:  <tag> <name zero term>
 ///   | pop:  <tag>
-/// 
+///
 /// on the decode side, we'll probably mmap it so not much different
 
 enum ArchiveFormat1Tag {
@@ -200,65 +203,135 @@ impl TryFrom<&u8> for ArchiveFormat1Tag {
     }
 }
 
-struct MyVisitor<W: Write> {
-    out: W,
-    buf: Vec<u8>,
+// So i intended to have this generic over a writer so you could eg test with a vec, but then idk
+// how to do the specialization for files when we want to use sendfile; I think io::copy does this
+// appropriately but the 99% case is for files, so just do that
+// struct MyVisitor<W: Write> {
+//     writer: BufWriter::<W>,
+// }
+//
+// impl<W: Write> MyVisitor<W> {
+//     fn new(out: W) -> MyVisitor<W> {
+//         MyVisitor { writer: BufWriter::<W>::new(out), }
+//     }
+//
+//     fn into_writer(self) -> W {
+//         self.writer.into_inner().map_err(|_| Error::Write).unwrap()
+//     }
+// }
+
+struct MyVisitor {
+    writer: BufWriter::<File>,
 }
 
-impl<W: Write + Seek> MyVisitor<W> {
-    fn new(file: W) -> MyVisitor<W> {
-        MyVisitor {
-            out: file,
-            buf: Vec::with_capacity(512), // names at most 255 + 1 \0 tag and u32le
-        }
+impl MyVisitor {
+    fn new(out: File) -> MyVisitor {
+        MyVisitor { writer: BufWriter::new(out) }
     }
 
-    fn into_file(self) -> W {
-        self.out
+    fn into_file(self) -> File {
+        self.writer.into_inner().map_err(|_| Error::Write).unwrap()
     }
 }
 
-impl<W: Write + Seek> Visitor for MyVisitor<W> {
+// the File::metadata.len() uses statx with STATX_ALL
+// the statx struct is much bigger than stat and even with masking
+// it still does a copy of the whole thing
+fn file_size_statx<Fd: AsRawFd>(fd: &Fd) -> Result<u64, Error> {
+    use std::mem;
+    let size = unsafe {
+        let empty_path = c"";
+        let mut buf: libc::statx = mem::zeroed();
+        let ret = libc::statx(
+            fd.as_raw_fd(), empty_path.as_ptr(),
+            libc::AT_STATX_SYNC_AS_STAT | libc::AT_EMPTY_PATH,
+            libc::STATX_SIZE,
+            &mut buf as *mut _
+        );
+        if ret < 0 { return Err(Error::Statx); }
+        buf.stx_size
+    };
+    Ok(size)
+}
+
+fn file_size_fstat<Fd: AsRawFd>(fd: &Fd) -> Result<u64, Error> {
+    use std::mem;
+    let size = unsafe {
+        let mut buf: libc::stat = mem::zeroed();
+        let ret = libc::fstat(
+            fd.as_raw_fd(),
+            &mut buf as *mut _
+        );
+        if ret < 0 { return Err(Error::Fstat); }
+        buf.st_size
+    };
+    // dude st_size is signed here and unsigned in statx
+    size.try_into().map_err(|_| Error::Fstat)
+}
+
+fn file_size<Fd: AsRawFd>(fd: &Fd) -> Result<u64, Error> {
+    //file_size_statx(fd)
+    file_size_fstat(fd)
+}
+
+// TODO how to pass errors back through appropriately?
+//impl<W: Write + Seek> Visitor for MyVisitor<W> {
+impl Visitor for MyVisitor {
     fn on_file(&mut self, name: &CStr, mut file: File) -> () {
-        let len = file.metadata().unwrap().len();
+        //let len = file.metadata().unwrap().len();
+        let len = file_size(&file).unwrap();
 
-        self.buf.clear();
-        self.buf.push(ArchiveFormat1Tag::File as u8);
-        self.buf.extend_from_slice(name.to_bytes_with_nul());
-        self.buf.extend_from_slice(&(len as u32).to_le_bytes());
-        self.out.write_all(self.buf.as_slice()).unwrap();
+        // self.buf.clear();
+        // self.buf.push(ArchiveFormat1Tag::File as u8);
+        // self.buf.extend_from_slice(name.to_bytes_with_nul());
+        // self.buf.extend_from_slice(&(len as u32).to_le_bytes());
+        // self.out.write_all(self.buf.as_slice()).unwrap();
 
-        // TODO how to pass errors back through appropriately?
+        self.writer.write_all(&[ArchiveFormat1Tag::File as u8]).unwrap();
+        self.writer.write_all(name.to_bytes_with_nul()).unwrap();
+        self.writer.write_all(&(len as u32).to_le_bytes()).unwrap();
+        self.writer.flush().unwrap();
+
         // TODO io::copy tries a copy_file_range first then falls back to sendfile when the two fds
         // are on different filesystems; this is happening now b/c I'm going from a disk to tmpfs
         // but my initial testing was tmpfs -> tmpfs , inside the vm it will be pmem -> tmpfs so
         // I think we'll want to instead always use sendfile (if we were to go that route, but
         // write seems good enough)
-        io::copy(&mut file, &mut self.out).unwrap();
+        // docs say it is inadvisable to write through get_mut, but ...
+        let outfile = self.writer.get_mut();
+        // io::copy(&mut file, &mut outfile).unwrap();
+        // TODO maybe configurable whether to use copy_file_range or sendfile
+        sendfile_all(&mut file, outfile, len).unwrap();
     }
 
     fn on_dir(&mut self, name: &CStr) -> () {
-        self.buf.clear();
-        self.buf.push(ArchiveFormat1Tag::Dir as u8);
-        self.buf.extend_from_slice(name.to_bytes_with_nul());
-        self.out.write_all(self.buf.as_slice()).unwrap();
+        // self.buf.clear();
+        // self.buf.push(ArchiveFormat1Tag::Dir as u8);
+        // self.buf.extend_from_slice(name.to_bytes_with_nul());
+        // self.out.write_all(self.buf.as_slice()).unwrap();
+
+        self.writer.write_all(&[ArchiveFormat1Tag::Dir as u8]).unwrap();
+        self.writer.write_all(name.to_bytes_with_nul()).unwrap();
     }
 
     fn leave_dir(&mut self) -> () {
-        self.out.write_all(&[ArchiveFormat1Tag::Pop as u8]).unwrap();
+        //self.out.write_all(&[ArchiveFormat1Tag::Pop as u8]).unwrap();
+        self.writer.write_all(&[ArchiveFormat1Tag::Pop as u8]).unwrap();
     }
 }
 
-fn create_v1(args: &[String]) {
-    let outname = args.get(0).ok_or(Error::NoOutfile).unwrap();
-    let indir = args.get(1).ok_or(Error::NoOutfile).unwrap();
+/// args: <input dir> <output file>
+fn pack_v1(args: &[String]) {
+    let indir = args.get(0).ok_or(Error::NoOutfile).unwrap();
+    let outname = args.get(1).ok_or(Error::NoOutfile).unwrap();
     let indirpath = Path::new(indir);
+    assert!(indirpath.is_dir(), "{:?} should be a dir", indirpath);
     let fileout = File::create(outname).unwrap();
-    let mut v: MyVisitor<File> = MyVisitor::new(fileout);
-    list_dir(indirpath, &mut v).unwrap();
-    let outfile = v.into_file();
+    let mut visitor = MyVisitor::new(fileout);
+    list_dir(indirpath, &mut visitor).unwrap();
+    let outfile = visitor.into_file();
     let len = outfile.metadata().unwrap().len();
-    println!("outfile has total len={len}"); 
+    println!("outfile has total len={len}");
 
 }
 
@@ -380,29 +453,44 @@ fn as_slice<T>(data: &[u8]) -> Option<&[T]> {
     }
 }
 
-fn copy_file_range_all(filein: &mut File, fileout: &mut File, len: usize) -> Result<(), Error> {
+fn copy_file_range_all(filein: &mut File, fileout: &mut File, len: u64) -> Result<(), Error> {
     let fd_in  = filein.as_raw_fd();
     let fd_out = fileout.as_raw_fd();
     let mut len = len;
     while len > 0 {
         let ret = unsafe {
-            libc::copy_file_range(fd_in, ptr::null_mut(), fd_out, ptr::null_mut(), len, 0)
+            libc::copy_file_range(fd_in, ptr::null_mut(), fd_out, ptr::null_mut(), len as usize, 0)
         };
-        if ret < 0 { return Err(Error::CopyFileRange); }
-        if ret == 0 { return Err(Error::CopyFileRange); }
-        let ret = ret as usize;
+        if ret <= 0 { return Err(Error::CopyFileRange); }
+        let ret = ret as u64;
         if ret > len { return Err(Error::CopyFileRange); }
         len -= ret;
     }
     Ok(())
 }
 
-/// args <infile> <output dir> 
+fn sendfile_all(filein: &mut File, fileout: &mut File, len: u64) -> Result<(), Error> {
+    let fd_in  = filein.as_raw_fd();
+    let fd_out = fileout.as_raw_fd();
+    let mut len = len;
+    while len > 0 {
+        let ret = unsafe {
+            libc::sendfile(fd_out, fd_in, ptr::null_mut(), len as usize)
+        };
+        if ret <= 0 { return Err(Error::CopyFileRange); }
+        let ret = ret as u64;
+        if ret > len { return Err(Error::CopyFileRange); }
+        len -= ret;
+    }
+    Ok(())
+}
+
+/// args <infile> <output dir>
 ///   <output dir> should be empty
 fn unpack_v0(args: &[String]) {
     let inname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let outname = args.get(1).ok_or(Error::NoOutfile).unwrap();
-    let use_copy_file = { 
+    let use_copy_file = {
         if let Some(s) = args.get(2) {
             s == "copy_file_range"
         } else {
@@ -446,7 +534,7 @@ fn unpack_v0(args: &[String]) {
                 let ret = libc::mkdir(dirnames_cur.as_ptr() as *const i8, 0o755);
                 assert!(ret == 0, "mkdir failed");
             }
-            // idk is it better to do dirnames_buf.split(0)? 
+            // idk is it better to do dirnames_buf.split(0)?
             let zbi = dirnames_cur.iter().position(|&x| x == 0).unwrap();
             dirnames_cur = &dirnames_cur[zbi+1..];
         }
@@ -459,7 +547,7 @@ fn unpack_v0(args: &[String]) {
         assert!(filesizes.len() == num_files);
         infile.seek(SeekFrom::Start(data_start as u64)).unwrap();
         for size in filesizes {
-            let size = *size as usize;
+            let size = *size as u64;
             let mut fileout = unsafe {
                 let fd = libc::open(filenames_cur.as_ptr() as *const i8, libc::O_CREAT | libc::O_WRONLY, 0o755);
                 assert!(fd > 0, "open failed");
@@ -515,15 +603,17 @@ fn unpack_v0(args: &[String]) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
-        Some("create_v0") => { create_v0(&args[2..]); },
-        Some("create_v1") => { create_v1(&args[2..]); },
+        Some("pack_v0") => { pack_v0(&args[2..]); },
+        Some("pack_v1") => { pack_v1(&args[2..]); },
         Some("unpack_v0") => { unpack_v0(&args[2..]); },
         Some("unpack_v1") => { unpack_v1(&args[2..]); },
         Some("list_dirs") => { list_dirs(&args[2..]); },
         Some("make_malicious") => { make_malicious_archive(&args[2..]); },
         _ => {
-            println!("create_v0 <output-file> < <file-list>");
-            println!("unpack_v0 <input-file> <output-file> [copy_file_range]");
+            println!("pack_v0 <output-file> < <file-list>");
+            println!("pack_v1 <input-dir> <output-file>");
+            println!("unpack_v0 <input-file> <output-dir> [copy_file_range]");
+            println!("unpack_v1 <input-file> <output-dir>");
             println!("list_dirs < <file-list>");
         }
     }
