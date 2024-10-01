@@ -6,32 +6,26 @@ use std::fs::File;
 use std::io::{stdin,BufRead,Write,BufWriter,Seek,SeekFrom};
 use std::io;
 use std::os::fd::{FromRawFd,AsRawFd,IntoRawFd,OwnedFd};
-use std::os::unix::fs;
 use std::os::unix::prelude::OsStrExt;
 use std::path::Path;
 use std::ptr;
 
 use memmap::MmapOptions;
 
+mod common;
+mod open;
 mod liblistdir;
+mod ioringv1;
 
-use liblistdir::{Visitor,list_dir,mkdirat,openpathat};
+use liblistdir::{Visitor,list_dir};
+use open::{mkdirat,openpathat,chroot,openpath_at_cwd,openfile_at};
+use common::{Error,read_le_u32,ArchiveFormat1Tag};
+use ioringv1::unpack_v1_ring;
 
 // default fd table size is 64, we 3 + 1 open by default but we don't want to go to fd 257 because
 // that would trigger a realloc and then we waste, so this should always be 4 less than a power of
 // 2. Seems like diminishing returns
 const CLOSE_EVERY: i32 = 256 - 4;
-
-#[derive(Debug)]
-enum Error {
-    NoOutfile,
-    CopyFileRange,
-    Align,
-    Open,
-    Write,
-    Statx,
-    Fstat,
-}
 
 fn join_bytes<'a, I: Iterator<Item = &'a [u8]>>(xs: I) -> Vec<u8> {
     let mut acc: Vec<u8> = vec![];
@@ -73,7 +67,6 @@ fn list_dirs(_args: &[String]) {
 
 fn align_to_4<W: Seek + Write>(writer: &mut W) -> Result<(), Error> {
     let pos = writer.stream_position().map_err(|_| Error::Align)?;
-    let posorig = pos;
     if pos % 4 == 0 { return Ok(()); }
     let adj = 4 - (pos % 4);
     for _ in 0..adj { writer.write_all(&[0]).map_err(|_| Error::Align)?; }
@@ -189,24 +182,6 @@ fn pack_v0(args: &[String]) {
 ///
 /// on the decode side, we'll probably mmap it so not much different
 
-enum ArchiveFormat1Tag {
-    File = 1,
-    Dir = 2,
-    Pop = 3,
-}
-
-impl TryFrom<&u8> for ArchiveFormat1Tag {
-    type Error = ();
-    fn try_from(x: &u8) -> Result<ArchiveFormat1Tag, ()> {
-        match x {
-            // TODO what is the right way to do this?
-            1 => Ok(ArchiveFormat1Tag::File),
-            2 => Ok(ArchiveFormat1Tag::Dir),
-            3 => Ok(ArchiveFormat1Tag::Pop),
-            _ => Err(()),
-        }
-    }
-}
 
 // So i intended to have this generic over a writer so you could eg test with a vec, but then idk
 // how to do the specialization for files when we want to use sendfile; I think io::copy does this
@@ -335,37 +310,11 @@ fn pack_v1(args: &[String]) {
     let mut visitor = MyVisitor::new(fileout);
     list_dir(indirpath, &mut visitor).unwrap();
     let outfile = visitor.into_file();
-    let len = outfile.metadata().unwrap().len();
+    let _len = outfile.metadata().unwrap().len();
     // println!("outfile has total len={len}");
-
 }
 
 // TODO these are semi duplicated with stuff in liblistdir
-fn openfile_at<Fd: AsRawFd>(fd: &Fd, name: &CStr, flags: libc::c_int) -> Result<OwnedFd, Error> {
-    let fd = unsafe {
-        let ret = libc::openat(fd.as_raw_fd(), name.as_ptr(), flags, 0o666);
-        if ret < 0 { return Err(Error::Open); }
-        ret
-    };
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
-fn openpath_at_cwd(name: &CStr) -> Result<OwnedFd, Error> {
-    let fd = unsafe {
-        let ret = libc::openat(libc::AT_FDCWD, name.as_ptr(), libc::O_DIRECTORY | libc::O_PATH | libc::O_CLOEXEC);
-        if ret < 0 { return Err(Error::Open); }
-        ret
-    };
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
-// from rustdocs
-fn read_le_u32(input: &mut &[u8]) -> u32 {
-    let (int_bytes, rest) = input.split_at(std::mem::size_of::<u32>());
-    *input = rest;
-    u32::from_le_bytes(int_bytes.try_into().unwrap())
-}
-
 fn unpack_v1(args: &[String]) {
     let inname = args.get(0).ok_or(Error::NoOutfile).unwrap();
     let outname = args.get(1).ok_or(Error::NoOutfile).unwrap();
@@ -405,7 +354,7 @@ fn unpack_v1(args: &[String]) {
                 mkdirat(parent, name).unwrap();
                 let zbi = cur.iter().position(|&x| x == 0).unwrap(); // todo do better
                 cur = &cur[zbi+1..];
-                if cur[0] == (ArchiveFormat1Tag::Pop as u8) {
+                if *cur.get(0).unwrap() == (ArchiveFormat1Tag::Pop as u8) {
                     // fast path for empty dir, never open the dir and push it
                     cur = &cur[1..];
                 } else {
@@ -420,30 +369,13 @@ fn unpack_v1(args: &[String]) {
             },
             Some(Err(_)) => {
                 let b = cur[0];
-                println!("oh no got bad tag byte {b}");
-                assert!(false);
+                panic!("oh no got bad tag byte {b}");
             },
             None => {
                 break;
             }
         }
     }
-}
-
-fn chroot(dir: &Path) {
-    let uid = unsafe { libc::geteuid() };
-    let gid = unsafe { libc::getegid() };
-    unsafe {
-        let ret = libc::unshare(libc::CLONE_NEWUSER);
-        assert!(ret == 0, "unshare fail");
-    }
-    File::create("/proc/self/uid_map").unwrap()
-        .write_all(format!("0 {} 1", uid).as_bytes()).unwrap();
-    File::create("/proc/self/setgroups").unwrap().write_all(b"deny").unwrap();
-    File::create("/proc/self/gid_map").unwrap()
-        .write_all(format!("0 {} 1", gid).as_bytes()).unwrap();
-    fs::chroot(dir).unwrap();
-    std::env::set_current_dir("/").unwrap();
 }
 
 fn as_slice<T>(data: &[u8]) -> Option<&[T]> {
@@ -612,6 +544,7 @@ fn main() {
         Some("pack_v1") => { pack_v1(&args[2..]); },
         Some("unpack_v0") => { unpack_v0(&args[2..]); },
         Some("unpack_v1") => { unpack_v1(&args[2..]); },
+        Some("unpack_v1_ring") => { unpack_v1_ring(&args[2..]); },
         Some("list_dirs") => { list_dirs(&args[2..]); },
         Some("make_malicious") => { make_malicious_archive(&args[2..]); },
         _ => {
@@ -620,6 +553,7 @@ fn main() {
             println!("pack_v1 <input-dir> <output-file>");
             println!("unpack_v0 <input-file> <output-dir> [copy_file_range]");
             println!("unpack_v1 <input-file> <output-dir>");
+            println!("unpack_v1_ring <input-file> <output-dir>");
             println!("list_dirs < <file-list>");
         }
     }

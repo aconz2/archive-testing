@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2021"
 default-run = "archive-testing"
 
+[profile.profiling]
+inherits = "release"
+debug = 1
+
 [dependencies]
+io-uring = "0.7.0"
 libc = "0.2.158"
 memmap = "0.7.0"
 rustix = { version = "0.38.37", features = ["fs"] }
