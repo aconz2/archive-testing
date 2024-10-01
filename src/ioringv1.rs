@@ -1,14 +1,17 @@
 use std::fs::File;
 use std::path::Path;
-use std::os::fd::{FromRawFd,OwnedFd,IntoRawFd};
+use std::os::fd::{FromRawFd,OwnedFd,IntoRawFd,RawFd};
 use std::io::Write;
 use std::ffi::CStr;
 
 use memmap::MmapOptions;
-use io_uring::{opcode, types, IoUring};
+use io_uring::{opcode,types,IoUring};
 
 use crate::common::{Error,read_le_u32,ArchiveFormat1Tag};
-use crate::open::{chroot,openpathat,mkdirat,openfile_at,openpath_at_cwd};
+use crate::open::chroot;
+
+const IOSQE_FIXED_FILE: i32 = 1 << 0;  // io_uring doesn't expose the sys module which contains all
+                                       // these flag definitions
 //     let read_e = opcode::Read::new(types::Fd(fd.as_raw_fd()), buf.as_mut_ptr(), buf.len() as _)
 //         .build()
 //         .user_data(0x42);
@@ -43,7 +46,28 @@ pub fn unpack_v1_ring(args: &[String]) {
     chroot(&outpath);
 
     let mut stack: Vec<OwnedFd> = Vec::with_capacity(32);  // always non-empty
-    stack.push(openpath_at_cwd(c".").unwrap());
+    // stack.push(openpath_at_cwd(c".").unwrap());
+
+    let mut ring = IoUring::new(8).unwrap();
+    let fds: [RawFd; 8] = [-1; 8];
+    println!("fds is {fds:?}");
+
+    ring.submitter().register_files(&fds).unwrap();
+
+    let root_open = opcode::OpenAt::new(types::Fd(libc::AT_FDCWD), c".".as_ptr())
+        .mode((libc::O_DIRECTORY | libc::O_PATH).try_into().unwrap()) // wtf why are they i32 and mode_t u32
+        .file_index(Some(types::DestinationSlot::auto_target()));
+        // .build();
+    println!("sqe {root_open:?}");
+    let root_open_built = root_open.build();
+    unsafe { ring.submission().push(&root_open_built).unwrap() };
+    let got = ring.submit_and_wait(1).unwrap();
+    println!("got {got} from submit and wait");
+    let cqe = ring.completion().next().expect("completion queue is empty");
+    println!("cqe is {cqe:?}");
+    println!("fds is {fds:?}");
+
+    return;
 
     let mut cur = &mmap[..];
     loop {
@@ -52,27 +76,27 @@ pub fn unpack_v1_ring(args: &[String]) {
                 cur = &cur[1..];
                 let parent = stack.last().unwrap();
                 let name = unsafe { CStr::from_bytes_with_nul_unchecked(cur) };
-                let fd = openfile_at(parent, name, libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC).unwrap();
-                let mut file = unsafe { File::from_raw_fd(fd.into_raw_fd()) };
+                //SYS let fd = openfile_at(parent, name, libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC).unwrap();
+                //SYS let mut file = unsafe { File::from_raw_fd(fd.into_raw_fd()) };
                 let zbi = cur.iter().position(|&x| x == 0).unwrap(); // todo do better
                 cur = &cur[zbi+1..];
                 let len = read_le_u32(&mut cur) as usize;
-                file.write_all(&cur[..len]).unwrap();
+                //SYS file.write_all(&cur[..len]).unwrap();
                 cur = &cur[len..];
             },
             Some(Ok(ArchiveFormat1Tag::Dir)) => {
                 cur = &cur[1..];
                 let parent = stack.last().unwrap();
                 let name = unsafe { CStr::from_bytes_with_nul_unchecked(cur) };
-                mkdirat(parent, name).unwrap();
+                //SYS mkdirat(parent, name).unwrap();
                 let zbi = cur.iter().position(|&x| x == 0).unwrap(); // todo do better
                 cur = &cur[zbi+1..];
                 if *cur.get(0).unwrap() == (ArchiveFormat1Tag::Pop as u8) {
                     // fast path for empty dir, never open the dir and push it
                     cur = &cur[1..];
                 } else {
-                    let fd = openpathat(parent, name).unwrap();
-                    stack.push(fd);
+                    //SYS let fd = openpathat(parent, name).unwrap();
+                    // stack.push(fd);
                 }
             },
             Some(Ok(ArchiveFormat1Tag::Pop)) => {

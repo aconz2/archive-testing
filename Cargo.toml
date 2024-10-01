@@ -9,7 +9,7 @@ inherits = "release"
 debug = 1
 
 [dependencies]
-io-uring = "0.7.0"
+io-uring = { version = "0.7.0", path = "../io-uring" }
 libc = "0.2.158"
 memmap = "0.7.0"
 rustix = { version = "0.38.37", features = ["fs"] }
