@@ -396,7 +396,7 @@ use_copy_file=true
   * `close_range` is roughly 10x faster from 0.2 to 0.02 on the linux unpack (see the difference in `write` vs `copy_file_range` b/c I only put it in the `write` version for now. I know this muddies the `copy_file_range` difference but it wasn't significant before (and not sure it ever would be for tmpfs).
     * this might only be suitable for a standalone program, less well behaved in a lib situation I think
       * I am slightly cheating here because the version with `write+close_range` doesn't close the last batch of up to ~250 fds and just exits. would be different in a lib version
-* `cpio` is slow!
+* `cpio` is slow! (to be fair this version of the unpacker, not necessarily the format)
   * did 10x more syscalls than `tar`
   * a lot come from the reads and writes in 512 byte increments (!)
 * `tar`
@@ -789,3 +789,13 @@ Just for fun here is small 9 files 3 dirs:
 which has io_uring being about 5x slower, though it's 0.167ms vs 0.982ms. And using more cores doesn't help here.
 
 Maybe there is some tuning with options, I have not fully explored io_uring. And there's also the possibility of not calling into `io_uring_enter` but using the fully async thing, but I doubt that would help that much, we're only doing 311 enters in the linux case (and 1 in the small case!).
+
+# takeaways
+
+I need to focus on other things right now but I'm glad I got some of my io_uring hype out of the way. Overall it's a bit disappointing that unpacking an archive is so slow. For single core, tar vs unpack_v0 vs unpack_v1 vs unpack_v1_ring for linux test case are all in the range of 1.1 - 1.3 seconds, with an archive size of 1.3G, so about 1GB/s, whereas
+
+```
+sysbench memory --memory-block-size=1M --memory-total-size=10G run
+```
+
+gives me about 40GB/s. Imagine unpacking linux tree in 32ms!
