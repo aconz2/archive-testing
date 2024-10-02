@@ -708,4 +708,82 @@ We do the same chroot thing to guard against path traversals, then open our root
 
 ## benchmarking
 
-Initial results are pretty much on par with v0, though I haven't done the `close_range` optimization yet in v1 so I expect them to improve a tad. Though I'm actually not sure I can do that in v1 because we keep directory fd's open and our fd range will be a mix of file and dirs if we do a deferred close. Maybe uring will make an entrance and we can just periodically do a bulk close. Overkill I know. Since I'm thinking about uring, it would be silly only to use it for close, but you have to be slightly careful with arranging work. So we iterate through the bytecode and prepare our submission q and submit when full, but once we hit a `dir` bytecode, we have to submit what we have (except for the `dir;pop` case), because later files will need the fd of that dir for openat. For packing there is no `IORING_OP_SENDFILE` which is too bad. Random confusion I have is about the interaction of setting a sqe `fd` vs `file_index` (search `REQ_F_FIXED_FILE` in the kernel or  `IOSQE_FIXED_FILE` in liburing). For example, in [`io_close_prep`](https://elixir.bootlin.com/linux/v6.11/source/io_uring/openclose.c#L207) it will ebadf if that flag is set and einval if fd and `file_index` are both set but does seem to support using
+Initial results are pretty much on par with v0, though I haven't done the `close_range` optimization yet in v1 so I expect them to improve a tad. Though I'm actually not sure I can do that in v1 because we keep directory fd's open and our fd range will be a mix of file and dirs if we do a deferred close. Maybe uring will make an entrance and we can just periodically do a bulk close. Overkill I know.
+
+# io_uring
+
+I wrote an initial io_uring unpacker in `src/ioringv1.rs` called with `unpack_v1_ring` (see `scripts/test0v1.sh` for some initial testing). Wow it's a bit ugly but is correct in my testing so far. There are so many possible variations for implementation strategies for this problem it is a bit overwhelming. I need to stop working on this but I will try to lay out some thoughts I have so far.
+
+The initial implementation only uses io_uring for files because the typical mix will probably have more files than directories. In the simple case, both actually take 3 system calls; for files `openat,write,close`, vs `mkdirat,openat,close`, but `write` might not be complete so might need resubmission.
+
+We have to track some state on the submission queue entry (sqe) because the corresponding completion queue entry (cqe) may not come out in the same order they went in. So we have to attach a `user_data` to distinguish between which file this operation is on and what the operation was. For instance, if a `write` comes back incomplete, we need to look up what file we were writing and get the remainder of the slice to resubmit.
+
+So the overall flow is to queue up `N` files for creation (including writing) and run the batch to completion when it is full. (Another more complicated variant would be to run only once and then continue on, but you can end up with holes in your batch that makes things more complicated). To run a batch, we create a pair of linked sqe's for `openenat+write` (which means our sq needs to be `2N` long) and then submit. Then run over the cq and check a) if the openat errored and b) if the write was incomplete. Incomplete writes need to get resubmitted and update the bookkeeping to track where in the slice we are. Note that in testing against the linux tree 0 files get resubmitted with the max file size of 23MB (`drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_3_2_0_sh_mask.h` what even is that 220k lines of `#define`s!). But I did test this by manually setting the initial write size to be incomplete.
+
+One thing missing is the `close` for the file's `fd`, which is because we use a io_uring direct file table. We size this table to be equal to the batch size. Each entry in the batch uses its natural index into this table. One slightly confusing thing in io_uring is that for `openat` which "creates" an fd, we tell it "hey, open this file and use the slot `i` in our file table" by setting the `file_index` of the op. If you don't set `file_index`, it would create a regular fd that you could use with a standard syscall; direct fd's are not usable outside io_uring. But then when we want to use that direct fd in the write call, the regular `fd` field is set and the op flags are set with `IOSQE_FIXED_FILE`; in the rust wrapper this is taken care of by creating the op like `Write::new(types::Fixed(i))`. Slight asymmetry but okay once you know. We also need to link these two requests so that the `open` happens-before `write`; each pair of ops commutes but within the pair it must be serialized. Okay and so finally to explain the lack of close: let's imagine we're on our second batch so we have some already opened direct fd's in our file table, when we submit a new openat to use index 0 for example, it will close the file at index 0 if one exists. (That happens from `io_openat->io_openat2->io_fixed_fd_install->__io_fixed_fd_install->[io_install_fixed_file](https://elixir.bootlin.com/linux/v6.11/source/io_uring/filetable.c#L80)`). So long story short is we get to skip closing every file fd because it is implicit when we reuse the slot.
+
+Looking at the strace summary for unpacking linux with 79455 files and 5139 dirs:
+
+```
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ------------------
+ 98.95   10.121670       32545       311           io_uring_enter
+  0.38    0.038684           7      5138           mkdirat
+  0.19    0.019904           3      5145           openat
+  0.16    0.016000           3      5146           close
+  ...
+------ ----------- ----------- --------- --------- ------------------
+100.00   10.310288         652     15813         1 total
+```
+
+we see that we use 15k syscalls to create 79k files (using batch size 256), nice!
+
+On the perf side, things are a bit complicated. For small sizes, there is (unscientifically speaking) no benefit. For large sizes, there can be a benefit, but it only comes when we use multiple cores (for the kernel workers, userspace is still single threaded). For my use case, that isn't very interesting since I'm targeting 1 core or possibly 2 hyperthreads right now. A quick comparison without and with io_uring
+
+```
+# without io_uring
+# perf stat ./target/release/archive-testing unpack_v1 /tmp/linux.v1 /tmp/dest
+       1.144690505 seconds time elapsed
+
+       0.016958000 seconds user
+       1.123868000 seconds sys
+
+# with io_uring all cores (16 physical 32 logical)
+# perf stat ./target/release/archive-testing unpack_v1_ring /tmp/linux.v1 /tmp/dest
+       0.526163889 seconds time elapsed
+
+       0.011397000 seconds user
+       7.389336000 seconds sys
+
+# with io_uring 2 cores
+# taskset -c 2-3 perf stat ./target/release/archive-testing unpack_v1_ring /tmp/linux.v1 /tmp/dest
+       0.929013929 seconds time elapsed
+
+       0.010980000 seconds user
+       1.556366000 seconds sys
+
+# with io_uring 1 core
+# taskset -c 2 perf stat ./target/release/archive-testing unpack_v1_ring /tmp/linux.v1 /tmp/dest
+       1.954103783 seconds time elapsed
+
+       0.014952000 seconds user
+       1.924154000 seconds sys
+```
+
+So we go from about 2x faster to 2x slower when using all cores vs 1 core. Not amazing.
+
+Just for fun here is small 9 files 3 dirs:
+
+```
+# without io_uring
+# taskset -c 0 perf stat -r 1000 --pre "bash -c 'rm -rf /tmp/dest && mkdir /tmp/dest'" -- ./target/release/archive-testing unpack_v1 /tmp/archive-testing.v1 /tmp/dest
+         0.0001670 +- 0.0000100 seconds time elapsed  ( +-  6.02% )
+
+# with io_uring
+# taskset -c 0 perf stat -r 1000 --pre "bash -c 'rm -rf /tmp/dest && mkdir /tmp/dest'" -- ./target/release/archive-testing unpack_v1_ring /tmp/archive-testing.v1 /tmp/dest
+        0.00098217 +- 0.00000652 seconds time elapsed  ( +-  0.66% )
+```
+
+which has io_uring being about 5x slower, though it's 0.167ms vs 0.982ms. And using more cores doesn't help here.
+
+Maybe there is some tuning with options, I have not fully explored io_uring. And there's also the possibility of not calling into `io_uring_enter` but using the fully async thing, but I doubt that would help that much, we're only doing 311 enters in the linux case (and 1 in the small case!).

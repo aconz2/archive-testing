@@ -217,6 +217,7 @@ impl MyVisitor {
 // the File::metadata.len() uses statx with STATX_ALL
 // the statx struct is much bigger than stat and even with masking
 // it still does a copy of the whole thing
+#[allow(dead_code)]
 fn file_size_statx<Fd: AsRawFd>(fd: &Fd) -> Result<u64, Error> {
     use std::mem;
     let size = unsafe {

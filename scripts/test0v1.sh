@@ -51,9 +51,9 @@ function setup() {
 function checkdest() {  # <name> <command>
     setup
     eval $2 &>/dev/null
-    inspectdir /tmp/dest > /tmp/$1.inspection
+    #inspectdir /tmp/dest > /tmp/$1.inspection
     h=$(hashdir /tmp/dest)
-    printf "%10s %s\n" "$1" "$h"
+    printf "%18s %s\n" "$1" "$h"
 }
 
 function hyperfinepack() {
@@ -84,43 +84,52 @@ function hyperfineunpack() {
         --command-name atv1 "$bin unpack_v1 /tmp/$dir.v1 /tmp/dest"
 }
 
-
 for dir in archive-testing linux; do
-    hyperfinepack $dir
-    hyperfineunpack $dir
+    # hyperfinepack $dir
+    # hyperfineunpack $dir
 
     h=$(hashdir /tmp/$dir.copy)
     # inspectdir /tmp/$dir.copy > /tmp/$dir.copy.inspection
-    printf "%10s %s\n" "expected" "$h"
-    checkdest tar "tar --extract --file /tmp/$dir.tar --directory /tmp/dest"
-    checkdest unpack_v0 "$bin unpack_v0 /tmp/$dir.v0 /tmp/dest"
+    printf "%18s %s\n" "expected" "$h"
+    #checkdest tar "tar --extract --file /tmp/$dir.tar --directory /tmp/dest"
+    #checkdest unpack_v0 "$bin unpack_v0 /tmp/$dir.v0 /tmp/dest"
     checkdest unpack_v1 "$bin unpack_v1 /tmp/$dir.v1 /tmp/dest"
+    checkdest unpack_v1_ring "$bin unpack_v1_ring /tmp/$dir.v1 /tmp/dest"
 done
 
 
 function straceit() {
+    core=$1
+    shift
     setup
-    taskset -c 2 strace -c $@
+    taskset -c $core strace -c $@
 }
 
 function perfit() {
+    core=$1
+    shift
     setup
-    taskset -c 2 perf stat $@
+    taskset -c $core perf stat $@
 }
 
 function testit() {
-    straceit $@
+    #straceit $@
     perfit $@
 }
 
-header 'tracing atv0 archive-testing'
-testit $bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest
+# header 'tracing atv0 archive-testing'
+# testit 2 $bin unpack_v0 /tmp/archive-testing.v0 /tmp/dest
+#
+# header 'tracing atv1 archive-testing'
+# testit 2 $bin unpack_v1 /tmp/archive-testing.v1 /tmp/dest
+#
+# header 'tracing atv0 linux'
+# testit 2 $bin unpack_v0 /tmp/linux.v0 /tmp/dest
+#
+# header 'tracing atv1 linux'
+# testit 2 $bin unpack_v1 /tmp/linux.v1 /tmp/dest
 
-header 'tracing atv1 archive-testing'
-testit $bin unpack_v1 /tmp/archive-testing.v1 /tmp/dest
-
-header 'tracing atv0 linux'
-testit $bin unpack_v0 /tmp/linux.v0 /tmp/dest
-
-header 'tracing atv1 linux'
-testit $bin unpack_v1 /tmp/linux.v1 /tmp/dest
+for core in 2 2-3 2-4 2-6 2-8 2-16 2-32; do
+    header "tracing atv1_ring linux $core"
+    perfit $core $bin unpack_v1_ring /tmp/linux.v1 /tmp/dest
+done

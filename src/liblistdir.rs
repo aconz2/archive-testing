@@ -1,9 +1,8 @@
 use std::path::Path;
-use std::ffi::{CStr,CString};
+use std::ffi::{CStr};
 use rustix::fs::{RawDir,FileType};
 use std::os::fd::OwnedFd;
 use std::fs::File;
-use std::os::unix::ffi::OsStrExt;
 
 const MAX_DIR_DEPTH: usize = 32;
 
@@ -44,7 +43,7 @@ pub trait Visitor {
     fn leave_dir(&mut self) -> ();
 }
 
-fn list_dir2_rec<V: Visitor>(curname: &CStr, curdir: &OwnedFd, v: &mut V, depth: usize) -> Result<(), Error> {
+fn list_dir2_rec<V: Visitor>(curdir: &OwnedFd, v: &mut V, depth: usize) -> Result<(), Error> {
     if depth > MAX_DIR_DEPTH { return Err(Error::DirTooDeep); }
 
     let mut buf = Vec::with_capacity(4096);
@@ -67,7 +66,7 @@ fn list_dir2_rec<V: Visitor>(curname: &CStr, curdir: &OwnedFd, v: &mut V, depth:
                 let curname = entry.file_name();
 
                 v.on_dir(curname);
-                list_dir2_rec(curname, &newdirfd, v, depth + 1)?;
+                list_dir2_rec(&newdirfd, v, depth + 1)?;
                 v.leave_dir();
             },
             _ => {}
@@ -78,8 +77,7 @@ fn list_dir2_rec<V: Visitor>(curname: &CStr, curdir: &OwnedFd, v: &mut V, depth:
 }
 
 pub fn list_dir<V: Visitor>(dir: &Path, v: &mut V) -> Result<(), Error> {
-    let curname = CString::new(dir.as_os_str().as_bytes()).unwrap();
     let dirfd = opendir(dir)?;
-    list_dir2_rec(curname.as_ref(), &dirfd, v, 0)?;
+    list_dir2_rec(&dirfd, v, 0)?;
     Ok(())
 }

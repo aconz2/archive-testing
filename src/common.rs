@@ -7,6 +7,7 @@ pub enum Error {
     Align,
     Open,
     Write,
+    #[allow(dead_code)]
     Statx,
     Fstat,
     DirTooDeep,
